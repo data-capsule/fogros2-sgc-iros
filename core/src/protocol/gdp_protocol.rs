@@ -2,7 +2,8 @@ use pnet_macros::packet;
 use pnet_macros_support::types::*;
 
 
-/// Documentation for MyProtocol
+
+/// Documentation for GdpProtocol
 #[packet]
 pub struct GdpProtocol {
     #[length = "32"]
@@ -19,3 +20,4 @@ pub struct GdpProtocol {
     #[payload]
     payload: Vec<u8>
 }
+

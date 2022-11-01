@@ -15,3 +15,5 @@ pnet_macros_support =  { version = "0.31.0" }
 pnet_macros ={ version = "0.31.0" }
 pnet_packet = { version = "0.31.0", features = ["std"] }
 local-ip-address = "0.4.9"
+aes-gcm = "0.9.4"
+anyhow = "1.0"

@@ -12,13 +12,17 @@ use pnet::util::MacAddr;
 use pnet_packet::ipv4::{MutableIpv4Packet, checksum};
 use pnet_packet::udp::MutableUdpPacket;
 use std::net::Ipv4Addr;
+use anyhow::Result;
 
-use crate::protocol::GDP_protocol::{GdpProtocolPacket, MutableGdpProtocolPacket};
+use crate::protocol::gdp_sec_protocol::{GdpSecProtocolPacket, MutableGdpSecProtocolPacket, GdpSecProtocol};
+use crate::protocol::gdp_protocol::{GdpProtocolPacket, MutableGdpProtocolPacket};
 use utils::app_config::AppConfig;
 use utils::conversion::str_to_ipv4;
 
 const LEFT: Ipv4Addr = Ipv4Addr::new(128, 32, 37, 69);
 const RIGHT: Ipv4Addr = Ipv4Addr::new(128, 32, 37, 41);
+const CLIENTS: [Ipv4Addr; 1] = [Ipv4Addr::new(128, 32, 37, 69)]; // todo: Client Ip are currently hardcoded, should be in routing table
+const SYMMKEY: &[u8] = b"an example very very secret key."; // todo: has to be 32-byte long
 
 fn handle_gdp_packet(packet: &[u8] ) -> Option<Vec<u8>> {
     let gdp_protocol_packet = GdpProtocolPacket::new(packet);
@@ -27,10 +31,7 @@ fn handle_gdp_packet(packet: &[u8] ) -> Option<Vec<u8>> {
     if let Some(gdp) = gdp_protocol_packet {
         println!("Received GDP Packet: {:?}\n", gdp);
 
-        // create new gdp packet
-        // let mut vec: Vec<u8> = vec![0; packet.len()];
-        // let mut new_packet = MutableUdpPacket::new(&mut vec[..]).unwrap();
-        // new_packet.clone_from(udp);
+        
         let mut vec: Vec<u8> = vec![0; gdp.packet().len()+50]; // TODO: where is this 50 come from????
         let mut res_gdp = MutableGdpProtocolPacket::new(&mut vec[..]).unwrap();
         res_gdp.clone_from(&gdp);
@@ -47,17 +48,81 @@ fn handle_gdp_packet(packet: &[u8] ) -> Option<Vec<u8>> {
     }
 }
 
+fn handle_gdp_sec_packet(packet: &[u8], from_client: bool) -> Result<Option<Vec<u8>>> {
+    if from_client {
+        // If packet comes from client, there is no gdp_sec header between udp and gdp layers
+        if let Some(payload) = handle_gdp_packet(packet) {
+
+            let mut vec: Vec<u8> = vec![0; GdpSecProtocol::get_header_length()+payload.len()];
+            let mut res_gdp_sec = MutableGdpSecProtocolPacket::new(&mut vec[..]).unwrap();
+            res_gdp_sec.set_payload(&payload);
+
+            let encrypted_gdp_sec = GdpSecProtocol::encrypt_gdp(&mut res_gdp_sec, SYMMKEY);
+            
+            match encrypted_gdp_sec {
+                Ok(res) => {
+                    // todo: uncomment to check if decypted == unencrypted
+                    // println!("Before Encryption GDP packet payload is = {:?}", payload);
+                    // let temp = GdpSecProtocol::decrypt_gdp(&GdpSecProtocolPacket::new(&res).unwrap(), SYMMKEY)?;
+                    // println!("Decrypted GDP packet payload is = {:?}", temp);
+                    // assert!(temp == payload);
+                    Ok(Some(res))
+                },
+                Err(_) => todo!(), 
+            }
+        } else {
+            println!("Malformed GDPSec Packet");
+            Ok(None)
+        }
+    } else {
+        // If packet comes from another router, there is a gdp_sec header between udp and gdp layers
+        let gdp_sec_packet = GdpSecProtocolPacket::new(packet);
+        if let Some(mut gdp_sec) = gdp_sec_packet {
+            let decrypted_gdp_sec_payload = GdpSecProtocol::decrypt_gdp(&mut gdp_sec, SYMMKEY)?;
+            if let Some(payload) = handle_gdp_packet(&decrypted_gdp_sec_payload) {
+                let mut vec: Vec<u8> = vec![0; GdpSecProtocol::get_header_length()+payload.len()];
+                let mut res_gdp_sec = MutableGdpSecProtocolPacket::new(&mut vec[..]).unwrap();
+                res_gdp_sec.set_payload(&payload);
+                let encrypted_gdp_sec = GdpSecProtocol::encrypt_gdp(&mut res_gdp_sec, SYMMKEY);
+                
+                match encrypted_gdp_sec {
+                    Ok(res) => {
+                        // todo: uncomment to check if decypted == unencrypted
+                        // println!("Before Encryption GDP packet payload is = {:?}", payload);
+                        // let temp = GdpSecProtocol::decrypt_gdp(&GdpSecProtocolPacket::new(&res).unwrap(), SYMMKEY)?;
+                        // println!("Decrypted GDP packet payload is = {:?}", temp);
+                        // assert!(temp == payload);
+                        Ok(Some(res))
+                    },
+                    Err(_) => todo!(), 
+                }
+            } else {
+                println!("Malformed GDPSec Packet");
+                Ok(None)
+            }
+        } else {
+            println!("Malformed GDPSec Packet");
+            Ok(None)
+        }
+    }
+    
+
+   
+}
+
 fn handle_udp_packet(
     packet: &[u8], 
-    config: &AppConfig) -> Option<Vec<u8>>
-    {
+    config: &AppConfig,
+    from_client: bool) -> Option<Vec<u8>>
+{
     let udp = UdpPacket::new(packet);
 
     if let Some(udp) = udp {
         if udp.get_destination() == 31415 {
             // Assume all packets on port 31415 are valid GDP packets
-            let res = handle_gdp_packet(udp.payload());
-            if let Some(payload) = res {
+            
+            let res = handle_gdp_sec_packet(udp.payload(), from_client);
+            if let Ok(Some(payload)) = res {
                 let mut vec: Vec<u8> = vec![0; 20+payload.len()]; // 20 B is the size of a UDP header
                 let mut res_udp = MutableUdpPacket::new(&mut vec[..]).unwrap();
                 res_udp.clone_from(&udp);
@@ -76,12 +141,13 @@ fn handle_udp_packet(
 fn handle_transport_protocol(
     protocol: IpNextHeaderProtocol,
     packet: &[u8],
-    config: &AppConfig
+    config: &AppConfig,
+    from_client: bool
 ) -> Option<Vec<u8>>
 {
     match protocol {
         IpNextHeaderProtocols::Udp => {
-            handle_udp_packet( packet, config)
+            handle_udp_packet( packet, config, from_client)
         }
         _ => {None}
     }
@@ -101,8 +167,9 @@ fn handle_ipv4_packet(
         let res = handle_transport_protocol(
             header.get_next_level_protocol(),
             header.payload(),
-            config,
-        );
+            config, 
+            CLIENTS.contains(&header.get_source()));
+        
         if let Some(payload) = res {
             let mut vec: Vec<u8> = vec![0; payload.len()+(header.get_header_length() as usize)*4]; // Multiply by 4 because ip header_length counting unit is word (4B)
             let mut res_ipv4 = MutableIpv4Packet::new(&mut vec[..]).unwrap();
