@@ -15,6 +15,7 @@ use rand::Rng;
 pub struct GdpSecProtocol {
     #[length = "12"]
     nonce: Vec<u8>, // 96-bits; unique per message
+    payload_len: u32be,
     #[payload]
     payload: Vec<u8>
 } 
@@ -24,28 +25,26 @@ impl GdpSecProtocol {
         12
     }
 
-    pub fn encrypt_gdp(gdp_sec_packet: &mut MutableGdpSecProtocolPacket, key: &[u8]) -> Result<Vec<u8>>{
-        // Description: Encrypt the gdp packet embedded in gdp_sec_packet and return the entire result gdp sec packet as byte slice
+    pub fn encrypt_gdp(res_gdp_sec: &mut MutableGdpSecProtocolPacket, plaintext: &[u8], key: &[u8]) -> Result<()>{
+        // Description: Encrypt the plaintext and write the ciphertext into the payload of res_gdp_sec
 
         let key = Key::from_slice(key);
         let cipher = Aes256Gcm::new(&key);
         let nonce = rand::thread_rng().gen::<[u8; 12]>(); 
         let nonce = Nonce::from_slice(&nonce);
-        gdp_sec_packet.set_nonce(nonce);
-        let ciphertext = cipher.encrypt(nonce, gdp_sec_packet.payload()).map_err(|_| {
+        res_gdp_sec.set_nonce(nonce);
+        let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|_| {
             println!("GDP encryption failed");
             anyhow!("GDP encryption failed")
         })?;
-        // gdp_sec_packet.set_payload(&ciphertext);
-        let mut vec: Vec<u8> = vec![0; GdpSecProtocol::get_header_length()+ciphertext.len()];
-        let mut res_gdp_sec = MutableGdpSecProtocolPacket::new(&mut vec[..]).unwrap();
-        res_gdp_sec.set_nonce(nonce);
-        res_gdp_sec.set_payload(&ciphertext);
 
-        Ok(vec)
+        res_gdp_sec.set_payload(&ciphertext);
+        res_gdp_sec.set_payload_len(ciphertext.len().try_into().unwrap());
+
+        Ok(())
     }
 
-    pub fn decrypt_gdp(gdp_sec_packet: &GdpSecProtocolPacket, key: &[u8]) -> Result<Vec<u8>> {
+    pub fn decrypt_gdp(gdp_sec_packet: &mut MutableGdpSecProtocolPacket, key: &[u8]) -> Result<()> {
         // Description: Decrypt the gdp sec packet and return the gdp packet only
 
         let key = Key::from_slice(key);
@@ -53,12 +52,15 @@ impl GdpSecProtocol {
 
         let nonce = gdp_sec_packet.get_nonce();
         let nonce = Nonce::from_slice(&nonce);
-        let plaintext = cipher.decrypt(nonce, gdp_sec_packet.payload()).map_err(|_| {
+        let ciphertext_length = gdp_sec_packet.get_payload_len() as usize;
+        let plaintext = cipher.decrypt(nonce, &gdp_sec_packet.payload()[..ciphertext_length]).map_err(|_| {
             debug!("GDP decryption failed");
             anyhow!("GDP decryption failed")
         })?;
+
+        gdp_sec_packet.set_payload(&plaintext);
         
-        Ok(plaintext)
+        Ok(())
     }
 }
 

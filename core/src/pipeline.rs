@@ -3,7 +3,8 @@ extern crate pnet;
 extern crate pnet_macros_support;
 
 use pnet::packet::{Packet, MutablePacket};
-use pnet::datalink::{self, NetworkInterface};
+use pnet::datalink::{self, NetworkInterface, DataLinkSender};
+use pnet::datalink::Channel::Ethernet;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::ip::{IpNextHeaderProtocol, IpNextHeaderProtocols};
 use pnet::packet::ipv4::Ipv4Packet;
@@ -11,125 +12,140 @@ use pnet::packet::udp::UdpPacket;
 use pnet::util::MacAddr;
 use pnet_packet::ipv4::{MutableIpv4Packet, checksum};
 use pnet_packet::udp::MutableUdpPacket;
+use std::error;
 use std::net::Ipv4Addr;
-use anyhow::Result;
+use anyhow::{Result, bail};
+
 
 use crate::protocol::gdp_sec_protocol::{GdpSecProtocolPacket, MutableGdpSecProtocolPacket, GdpSecProtocol};
 use crate::protocol::gdp_protocol::{GdpProtocolPacket, MutableGdpProtocolPacket};
+
 use utils::app_config::AppConfig;
 use utils::conversion::str_to_ipv4;
+use crate::rib::RoutingInformationBase;
+use crate::structs::GdpAction;
 
+// Ethernet frame is 1500 bytes payload + 14 bytes header 
+// cannot go beyond this size
+const MAX_ETH_FRAME_SIZE : usize = 1514;  
 const LEFT: Ipv4Addr = Ipv4Addr::new(128, 32, 37, 69);
 const RIGHT: Ipv4Addr = Ipv4Addr::new(128, 32, 37, 41);
 const CLIENTS: [Ipv4Addr; 1] = [Ipv4Addr::new(128, 32, 37, 69)]; // todo: Client Ip are currently hardcoded, should be in routing table
 const SYMMKEY: &[u8] = b"an example very very secret key."; // todo: has to be 32-byte long
 
-fn handle_gdp_packet(packet: &[u8] ) -> Option<Vec<u8>> {
+fn handle_gdp_packet(
+    packet: &[u8], 
+    res_gdp: &mut MutableGdpProtocolPacket,
+    ) -> Option<()> {
     let gdp_protocol_packet = GdpProtocolPacket::new(packet);
     
     
     if let Some(gdp) = gdp_protocol_packet {
         println!("Received GDP Packet: {:?}\n", gdp);
 
-        
-        let mut vec: Vec<u8> = vec![0; gdp.packet().len()+50]; // TODO: where is this 50 come from????
-        let mut res_gdp = MutableGdpProtocolPacket::new(&mut vec[..]).unwrap();
+
+        // create new gdp packet
+        // let mut vec: Vec<u8> = vec![0; packet.len()];
+        // let mut new_packet = MutableUdpPacket::new(&mut vec[..]).unwrap();
+        // new_packet.clone_from(udp);
+
         res_gdp.clone_from(&gdp);
         res_gdp.set_src_gdpname(&gdp.get_dst_gdpname());
         res_gdp.set_dst_gdpname(&gdp.get_src_gdpname());
-        res_gdp.set_payload(("echo".to_owned() +  &String::from_utf8(gdp.payload().to_vec()).unwrap()).as_bytes());
+        let payload:String = "t".to_string();
+        res_gdp.set_data_len(payload.len() as u16);
+        res_gdp.set_payload((payload.to_owned()).as_bytes());
+        //res_gdp.set_payload(Vec::from())
+        
         // println!("{:?}", String::from_utf8(res_gdp.payload().to_vec()));
-        // println!("The constructed gdp packet is = {:?}\n", res_gdp);
+        println!("The constructed gdp packet is = {:?}\n", res_gdp);
         // println!("The buffer for the above packet is = {:?}\n", vec);
-        Some(vec)
+        Some(())
     } else {
         println!("Malformed GDP Packet");
         None
     }
 }
 
-fn handle_gdp_sec_packet(packet: &[u8], from_client: bool) -> Result<Option<Vec<u8>>> {
-    if from_client {
-        // If packet comes from client, there is no gdp_sec header between udp and gdp layers
-        if let Some(payload) = handle_gdp_packet(packet) {
+fn handle_gdp_sec_packet(packet: &[u8], res_gdp_sec: &mut MutableGdpSecProtocolPacket, from_client: bool) -> Result<Option<()>> {
 
-            let mut vec: Vec<u8> = vec![0; GdpSecProtocol::get_header_length()+payload.len()];
-            let mut res_gdp_sec = MutableGdpSecProtocolPacket::new(&mut vec[..]).unwrap();
-            res_gdp_sec.set_payload(&payload);
+    if !(from_client) {
+        let gdp_sec = GdpSecProtocolPacket::new(packet);
+        if let Some(gdp_sec) = gdp_sec {
+            res_gdp_sec.clone_from(&gdp_sec);
+            let dec_result = GdpSecProtocol::decrypt_gdp(res_gdp_sec, SYMMKEY);
+            let mut plaintext = vec![0; res_gdp_sec.get_payload_len().try_into().unwrap()];
+            plaintext.copy_from_slice(&res_gdp_sec.payload()[..res_gdp_sec.get_payload_len() as usize]);
+            match dec_result {
+                Ok(()) => {
+                    let mut res_gdp = MutableGdpProtocolPacket::new(&mut res_gdp_sec.payload_mut()[..]).unwrap();
 
-            let encrypted_gdp_sec = GdpSecProtocol::encrypt_gdp(&mut res_gdp_sec, SYMMKEY);
-            
-            match encrypted_gdp_sec {
-                Ok(res) => {
-                    // todo: uncomment to check if decypted == unencrypted
-                    // println!("Before Encryption GDP packet payload is = {:?}", payload);
-                    // let temp = GdpSecProtocol::decrypt_gdp(&GdpSecProtocolPacket::new(&res).unwrap(), SYMMKEY)?;
-                    // println!("Decrypted GDP packet payload is = {:?}", temp);
-                    // assert!(temp == payload);
-                    Ok(Some(res))
+                    match handle_gdp_packet(gdp_sec.payload(), &mut res_gdp) {
+                        Some(()) => {
+                            match GdpSecProtocol::encrypt_gdp(res_gdp_sec, &plaintext, SYMMKEY) {
+                                Ok(_) => Ok(Some(())),
+                                Err(error) => bail!("Cannot encrypt GDP, error={:?}", error),
+                            }
+                        },
+                        None => {
+                            bail!("Cannot handle GDP")
+                        },
+                    }
                 },
-                Err(_) => todo!(), 
+                Err(error) => {return Err(error);}
             }
         } else {
-            println!("Malformed GDPSec Packet");
-            Ok(None)
+            bail!("Malformed GDP Sec Packet")
         }
     } else {
-        // If packet comes from another router, there is a gdp_sec header between udp and gdp layers
-        let gdp_sec_packet = GdpSecProtocolPacket::new(packet);
-        if let Some(mut gdp_sec) = gdp_sec_packet {
-            let decrypted_gdp_sec_payload = GdpSecProtocol::decrypt_gdp(&mut gdp_sec, SYMMKEY)?;
-            if let Some(payload) = handle_gdp_packet(&decrypted_gdp_sec_payload) {
-                let mut vec: Vec<u8> = vec![0; GdpSecProtocol::get_header_length()+payload.len()];
-                let mut res_gdp_sec = MutableGdpSecProtocolPacket::new(&mut vec[..]).unwrap();
-                res_gdp_sec.set_payload(&payload);
-                let encrypted_gdp_sec = GdpSecProtocol::encrypt_gdp(&mut res_gdp_sec, SYMMKEY);
-                
-                match encrypted_gdp_sec {
-                    Ok(res) => {
-                        // todo: uncomment to check if decypted == unencrypted
-                        // println!("Before Encryption GDP packet payload is = {:?}", payload);
-                        // let temp = GdpSecProtocol::decrypt_gdp(&GdpSecProtocolPacket::new(&res).unwrap(), SYMMKEY)?;
-                        // println!("Decrypted GDP packet payload is = {:?}", temp);
-                        // assert!(temp == payload);
-                        Ok(Some(res))
-                    },
-                    Err(_) => todo!(), 
-                }
-            } else {
-                println!("Malformed GDPSec Packet");
-                Ok(None)
+        let immediate_gdp_packet = GdpProtocolPacket::new(packet);
+
+        if let Some(immediate_gdp_packet) = immediate_gdp_packet {
+            let mut res_gdp = MutableGdpProtocolPacket::new(res_gdp_sec.payload_mut()).unwrap();
+            // println!("{:?}", res_gdp);
+            match handle_gdp_packet(&immediate_gdp_packet.packet()[..], &mut res_gdp) {
+                Some(()) => {
+                    match GdpSecProtocol::encrypt_gdp(res_gdp_sec, immediate_gdp_packet.packet(), SYMMKEY) {
+                        Ok(_) => {
+                            // todo: uncomment to verify correctness of encryption by re-decrypt. Will print out the before-encrypted gdp payload, \
+                            // todo: the after-encrypted gdp payload (with padding), and the re-decrypted gdp payload
+                            // check encryption correctness
+                            // println!("before encrypt = {:?}\n", immediate_gdp_packet.payload());
+                            // println!("after encrypt = {:?}\n", res_gdp_sec.payload());
+                            // GdpSecProtocol::decrypt_gdp(res_gdp_sec, SYMMKEY).unwrap();
+                            // let temp1 = res_gdp_sec.payload();
+                            // let temp = GdpProtocolPacket::new(temp1).unwrap();
+                            // let temp2 = temp.get_data_len() as usize;
+                            // println!("after re-decrypt = {:?}\n", &temp.payload()[..(temp2)]);
+                            Ok(Some(()))
+                        },
+                        Err(error) => bail!("Cannot encrypt GDP, error={:?}", error),
+                    }
+                },
+                None => {
+                    bail!("Cannot handle GDP")
+                },
             }
         } else {
-            println!("Malformed GDPSec Packet");
-            Ok(None)
+            bail!("Malformed GDP Packet")
         }
     }
-    
-
-   
 }
 
 fn handle_udp_packet(
     packet: &[u8], 
-    config: &AppConfig,
-    from_client: bool) -> Option<Vec<u8>>
-{
+    res_udp:&mut MutableUdpPacket,
+    config: &AppConfig, 
+    from_client: bool) -> Option<()>
+    {
     let udp = UdpPacket::new(packet);
-
     if let Some(udp) = udp {
-        if udp.get_destination() == 31415 {
-            // Assume all packets on port 31415 are valid GDP packets
+        let mut res_gdp_sec  = MutableGdpSecProtocolPacket::new(&mut res_udp.payload_mut()[..]).unwrap();
+        let res = handle_gdp_sec_packet(udp.payload(), &mut res_gdp_sec, from_client);
+        if let Ok(Some(_)) = res {
             
-            let res = handle_gdp_sec_packet(udp.payload(), from_client);
-            if let Ok(Some(payload)) = res {
-                let mut vec: Vec<u8> = vec![0; 20+payload.len()]; // 20 B is the size of a UDP header
-                let mut res_udp = MutableUdpPacket::new(&mut vec[..]).unwrap();
-                res_udp.clone_from(&udp);
-                res_udp.set_payload(&payload);
-                println!("Constructed UDP packet = {:?}", res_udp);
-                Some(vec)
-            } else {None}
+            println!("Constructed UDP packet = {:?}", res_udp);
+            Some(())
         } else {None}
     } else {
         println!("Malformed UDP Packet");
@@ -138,47 +154,30 @@ fn handle_udp_packet(
 }
 
 
-fn handle_transport_protocol(
-    protocol: IpNextHeaderProtocol,
-    packet: &[u8],
-    config: &AppConfig,
-    from_client: bool
-) -> Option<Vec<u8>>
-{
-    match protocol {
-        IpNextHeaderProtocols::Udp => {
-            handle_udp_packet( packet, config, from_client)
-        }
-        _ => {None}
-    }
-}
-
 fn handle_ipv4_packet( 
     ethernet: &EthernetPacket, 
-    config: &AppConfig) -> Option<Vec<u8>>{
+    res_ipv4: &mut MutableIpv4Packet,
+    config: &AppConfig) -> Option<()>{
     let header = Ipv4Packet::new(ethernet.payload());
     if let Some(header) = header {
-        // Filter packet not meant to be received (broadcast)
-        let m_ip = str_to_ipv4(&config.ip_local); 
-        if header.get_destination() != m_ip {
-            return None;
-        }
 
-        let res = handle_transport_protocol(
-            header.get_next_level_protocol(),
+        let header_length = (res_ipv4.get_header_length() * 4) as usize;
+        let mut res_udp  = MutableUdpPacket::new(&mut res_ipv4.packet_mut()[header_length..]).unwrap();        
+        let res = handle_udp_packet(
             header.payload(),
-            config, 
-            CLIENTS.contains(&header.get_source()));
-        
+            &mut res_udp,
+            config,
+            CLIENTS.contains(&header.get_source())
+        );
         if let Some(payload) = res {
-            let mut vec: Vec<u8> = vec![0; payload.len()+(header.get_header_length() as usize)*4]; // Multiply by 4 because ip header_length counting unit is word (4B)
-            let mut res_ipv4 = MutableIpv4Packet::new(&mut vec[..]).unwrap();
-            
-            res_ipv4.set_total_length((payload.len()+(header.get_header_length() as usize)*4).try_into().unwrap());
-            res_ipv4.set_payload(&payload);
+            let udp_packet_size = res_udp.get_length() as u16;
+            let ipv4_header_size = header.get_header_length() as u16;
+            let packet_size = (( udp_packet_size + ipv4_header_size ) as usize)*4;
+            res_ipv4.set_total_length((packet_size.try_into().unwrap()));
             
             // Simple forwarding based on configuration
             res_ipv4.clone_from(&header);
+            res_ipv4.set_destination(RIGHT);
             if header.get_source() == LEFT {
                 res_ipv4.set_destination(RIGHT);
             } else if header.get_source() == RIGHT{
@@ -192,7 +191,7 @@ fn handle_ipv4_packet(
             res_ipv4.set_checksum(checksum(&res_ipv4.to_immutable()));
             
             println!("Constructed IP packet = {:?}", res_ipv4);
-            Some(vec)
+            Some(())
 
         } else {None}
     } else {
@@ -201,55 +200,117 @@ fn handle_ipv4_packet(
     }
 }
 
-pub fn pipeline() {
-    use pnet::datalink::Channel::Ethernet;
+pub fn gdp_pipeline(
+    packet : &[u8], 
+    gdp_rib: &mut RoutingInformationBase, 
+    interface: &NetworkInterface , 
+    tx: &mut Box<dyn DataLinkSender>, 
+    config: &AppConfig
+) -> Option<()>
+{
+    //TODO: later we are going to separate the send logic as well 
+    
 
-    let config = AppConfig::fetch();
-    println!("Running with the following config: {:#?}", config);
+    let ethernet = EthernetPacket::new(packet).unwrap(); 
 
-    let iface_config = config.expect("Cannot find the config"); 
-    let iface_name = iface_config.net_interface.clone(); 
-    println!("Running with interface: {}", iface_name);
-    let interface_names_match = |iface: &NetworkInterface| iface.name == iface_name;
+    // Packet filtering 
+    // reasoning having a monolithic body here: 
+    // this part is supposed to be a quick filter embedded anywhere our networking logic belongs to 
+    // for example, embeded in the kernel
+    // as such, it has to be standalone to other components of the code, e.g. routing logic 
+    // this also allows zero copy of the write buffer 
 
-    // Find the network interface with the provided name
-    let interfaces = datalink::interfaces();
-    let interface = interfaces
-        .into_iter()
-        .filter(interface_names_match)
-        .next()
-        .unwrap_or_else(|| panic!("No such network interface: {}", iface_name));
+    // check ipv4 
+    if ethernet.get_ethertype() != EtherTypes::Ipv4 {
+       return None;
+    }
+    // check ipv4 has a payload
+    let ipv4_packet = match Ipv4Packet::new(ethernet.payload()) {
+        Some (packet) => packet, 
+        _ => return None
+    }; 
 
-    // Create a channel to receive on
-    let (mut tx, mut rx) = match datalink::channel(&interface, Default::default()) {
-        Ok(Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => panic!("packetdump: unhandled channel type"),
-        Err(e) => panic!("packetdump: unable to create channel: {}", e),
+    let m_ip = str_to_ipv4(&config.ip_local); 
+    //check ipv4 destination
+    if ipv4_packet.get_destination() != m_ip {
+        return None;
+    }
+
+    // check udp header
+    if ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp{
+        return None;
+    }
+
+    // check udp packet is included as payload 
+    let udp = match UdpPacket::new(ipv4_packet.payload()) {
+        Some(packet) => packet, 
+        _ => return None
     };
 
-    loop {
-        match rx.next() {
-            Ok(packet) => {
-                //handle_ethernet_frame(&interface, &EthernetPacket::new(packet).unwrap(), &mut tx, &iface_config);
-                let ethernet = EthernetPacket::new(packet).unwrap(); 
-                if ethernet.get_ethertype() == EtherTypes::Ipv4 {
-                    let res = handle_ipv4_packet(&ethernet, &iface_config);
-                    if let Some(payload) = res {
-                        tx.build_and_send(1, 14 + payload.len(),
-                            &mut |mut res_ether| {
-                                let mut res_ether = MutableEthernetPacket::new(&mut res_ether).unwrap();
+    // check port goes to our predefined port 
+    if udp.get_destination() != config.router_port {
+        return None;
+    }
 
-                                // Switch the source and destination
-                                res_ether.clone_from(&ethernet);
-                                res_ether.set_payload(&payload);
-                                res_ether.set_destination(MacAddr::broadcast());
-                                res_ether.set_source(interface.mac.unwrap());
-                                println!("Constructed Ethernet packet = {:?}", res_ether);
-                        });
-                    }
-                }
+    // check gdp packet is included as payload 
+    let gdp_protocol_packet = match GdpProtocolPacket::new(udp.payload()) {
+        Some(packet) => packet, 
+        _ => return None
+    };
+    
+    let gdp_action = GdpAction::try_from(gdp_protocol_packet.get_action()).unwrap();
+
+    match gdp_action {
+        GdpAction::RibGet => {
+            // handle rib query by responding with the RIB item
+            let dst_gdp_name = gdp_protocol_packet.get_dst_gdpname().clone(); 
+            gdp_rib.get(Vec::from([7, 1, 2, 3]));
+        }, 
+        GdpAction::RibReply => {
+            // update local rib with the rib reply
+            // below is simply an example
+            let dst_gdp_name = gdp_protocol_packet.get_dst_gdpname().clone(); 
+            gdp_rib.put(Vec::from([7, 1, 2, 3]), dst_gdp_name);
+        }, 
+        GdpAction::Forward => {
+            // forward the data to the next hop
+            // TODO: possible to have a seprate logic 
+
+            // Note: num_packets in build_and_send allows to rewrite the same buffer num_packets times (first param)
+            // we can use this to implement mcast and constantly rewrite the write buffer
+            match tx.build_and_send(1, MAX_ETH_FRAME_SIZE,
+                &mut |mut res_ether| {
+
+                    // res_ether is the write buffer that finally goes to the network
+                    let mut res_ether = MutableEthernetPacket::new(&mut res_ether).unwrap();
+                    res_ether.clone_from(&ethernet);
+
+                    // res_ipv4 is the pointer of res_ether pointing to the ethernet payload (i.e. start of the ip address)
+                    let mut res_ipv4 = MutableIpv4Packet::new(&mut res_ether.payload_mut()[..]).unwrap();
+                    let res = handle_ipv4_packet(&ethernet, &mut res_ipv4, &config);
+                    //res_ether.set_payload(&payload);
+                    res_ether.set_destination(MacAddr::broadcast());
+                    res_ether.set_source(interface.mac.unwrap());
+                    println!("Constructed Ethernet packet = {:?}", res_ether);
+            }) 
+            {
+                Some(result) => match result {
+                    Ok(_) => {}, 
+                    Err(err_msg) => {println!("send error with {:?}", err_msg) }
+                }, 
+                None => {println!("Err: send function return none!!!"); }
             }
-            Err(e) => panic!("packetdump: unable to receive packet: {}", e),
+            
+        }, 
+        GdpAction::Noop => {
+            // nothing to be done here
+            println!("GDP Action Noop Detected, Make sure to update to 5 for forwarding");
+        }, 
+        _ =>{
+            // control, put, get 
+            println!("{:?} is not implemented yet", gdp_action)
         }
     }
+    
+    Some(())
 }
