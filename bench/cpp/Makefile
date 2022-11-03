@@ -1,6 +1,6 @@
 CC=g++
 CFLAGS=-I. -std=c++17
-CLINK=-lzmq -lstdc++
+CLINK=-lzmq -lstdc++ -lpthread
 DEPS = example.cpp
 
 all: example.o 
