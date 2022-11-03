@@ -14,7 +14,7 @@ struct gdp {
     char num_packets[4];  // 32 / 8 
     char packet_no[4];  // 32 / 8 
     char data_len[2];  // 16 / 8 
-    char action[1];  // 8 / 8 
+    char action;  // 8 / 8 
     char ttl[1];  // 8 / 8 
     char payload; 
 } gdp_header;
@@ -25,7 +25,10 @@ int main(int argc, char const* argv[])
 	int sock = 0, valread, client_fd;
 	struct sockaddr_in serv_addr;
 	char* hello = "Hello from client";
-    struct gdp h;
+	struct gdp h = {0};
+	h.action = (char) 5;
+	h.payload = (char) 65;
+	
 	char buffer[1024] = { 0 };
 	if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
 		printf("\n Socket creation error \n");
@@ -37,7 +40,7 @@ int main(int argc, char const* argv[])
 
 	// Convert IPv4 and IPv6 addresses from text to binary
 	// form
-	if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr)
+	if (inet_pton(AF_INET, "128.32.37.48", &serv_addr.sin_addr)
 		<= 0) {
 		printf(
 			"\nInvalid address/ Address not supported \n");
