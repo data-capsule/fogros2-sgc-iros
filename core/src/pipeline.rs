@@ -43,6 +43,7 @@ fn handle_gdp_packet(
         res_gdp.clone_from(&gdp);
         res_gdp.set_src_gdpname(&gdp.get_dst_gdpname());
         res_gdp.set_dst_gdpname(&gdp.get_src_gdpname());
+        println!("Received buffer is {:?}", String::from_utf8(res_gdp.payload().to_vec()));
         let payload:String = "t".to_string();
         res_gdp.set_data_len(payload.len() as u16);
         res_gdp.set_payload((payload.to_owned()).as_bytes());
@@ -70,6 +71,7 @@ fn handle_udp_packet(
         let res = handle_gdp_packet(udp.payload(), &mut res_gdp);
         if let Some(payload) = res {
             res_udp.clone_from(&udp);
+            res_udp.set_checksum(res_udp.to_immutable().get_checksum());
             println!("Constructed UDP packet = {:?}", res_udp);
             Some(())
         } else {None}
@@ -104,11 +106,7 @@ fn handle_ipv4_packet(
             // Simple forwarding based on configuration
             res_ipv4.clone_from(&header);
             res_ipv4.set_destination(destination_ip);
-            // res_ipv4.set_destination(header.get_source());
-            // res_ipv4.set_source(header.get_destination());
-
-            let m_ip = str_to_ipv4(&config.ip_local);
-            res_ipv4.set_source(m_ip);
+            res_ipv4.set_source(header.get_destination());
             res_ipv4.set_checksum(checksum(&res_ipv4.to_immutable()));
             
             println!("Constructed IP packet = {:?}", res_ipv4);
