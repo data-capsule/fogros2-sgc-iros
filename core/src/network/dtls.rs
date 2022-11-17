@@ -106,8 +106,6 @@ pub async fn dtls_test_client(addr: &'static str) -> std::io::Result<SslContext>
     let dtls_sender_handle = tokio::spawn(async move {
         loop {
             let mut buf = vec![0u8; 1024];
-            let n = rd.read(&mut buf).await.unwrap();
-            dbg!(n);
             print!("-> {}", String::from_utf8_lossy(&buf[..n]));
         }
     });
