@@ -19,8 +19,8 @@ cargo build && sudo ./target/debug/gdp-router router
 ### testcases 
 
 We can come up with the following test case: 
-a router, a dtls client and a tcp client. We want to route dtls client's message
-to tcp client. 
+a router, a dtls client and a tcp client. We want to route tcp client's message
+to dtls client. 
 ```bash
 # (terminal A) run router
 $ cargo run router
@@ -34,15 +34,15 @@ $ nc localhost 9997
 
 Then we can use the following sample test cases
 ```
-# (tcp client) advertise itself with name 1
+# (dtls client) advertise itself with name 1
 ADV,1
-FWD,1,000
+FWD,1,000 // this sends itself a message
 
-# (dtls client) send message to name 1
+# (tcp client) send message to name 1
 FWD,1,111
 FWD,1,222
 FWD,1,333
 FWD,1,444
 ```
-We should expect messages appearing in tcp client's terminal.
+We should expect messages appearing in dtls client's terminal.
 
