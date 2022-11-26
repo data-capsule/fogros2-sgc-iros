@@ -10,6 +10,7 @@ pub mod structs;
 pub mod rib;
 // network processing
 pub mod connection_rib;
+pub mod remote_rib;
 pub mod pipeline;
 pub mod pipeline_pnet;
 // util

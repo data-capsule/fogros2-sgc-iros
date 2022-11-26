@@ -1,5 +1,5 @@
 use crate::network::udpstream::{UdpListener, UdpStream};
-use crate::pipeline::proc_gdp_packet;
+use crate::pipeline::{proc_gdp_packet, proc_rib_packet, populate_gdp_struct};
 use std::{net::SocketAddr, pin::Pin, str::FromStr};
 
 use openssl::{
@@ -9,7 +9,8 @@ use openssl::{
 };
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::structs::{GDPChannel, GDPPacket};
+use utils::app_config::AppConfig;
+use crate::structs::{GDPChannel, GDPPacket, GDPName};
 use tokio::sync::mpsc::{self, Sender};
 
 const UDP_BUFFER_SIZE: usize = 4096; // 17kb
@@ -35,7 +36,7 @@ fn ssl_acceptor(certificate: &[u8], private_key: &[u8]) -> std::io::Result<SslCo
 ///         incomine packets from rib -> send to the tcp session
 async fn handle_dtls_stream(
     socket: UdpStream, acceptor: SslContext, rib_tx: &Sender<GDPPacket>,
-    channel_tx: &Sender<GDPChannel>,
+    channel_tx: &Sender<GDPChannel>, is_remote_rib: bool
 ) {
     let (m_tx, mut m_rx) = mpsc::channel(32);
     let ssl = Ssl::new(&acceptor).unwrap();
@@ -58,18 +59,27 @@ async fn handle_dtls_stream(
             _ = stream.read(&mut buf) => {
                 // NOTE: if we want real time system bound
                 // let n = match timeout(Duration::from_millis(UDP_TIMEOUT), stream.read(&mut buf))
-                proc_gdp_packet(buf.to_vec(),  // packet
-                    rib_tx,  //used to send packet to rib
-                    channel_tx, // used to send GDPChannel to rib
-                    &m_tx //the sending handle of this connection
-                ).await;
+                if is_remote_rib {
+                    proc_rib_packet(buf.to_vec(),
+                        rib_tx,
+                        channel_tx,
+                        &m_tx
+                    ).await
+                } else {
+                    proc_gdp_packet(buf.to_vec(),  // packet
+                        rib_tx,  //used to send packet to rib
+                        channel_tx, // used to send GDPChannel to rib
+                        &m_tx //the sending handle of this connection
+                    ).await;
+                }
+                
             },
         }
     }
 }
 
 pub async fn dtls_listener(
-    addr: &'static str, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>,
+    addr: &'static str, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>, is_remote_rib: bool
 ) {
     let listener = UdpListener::bind(SocketAddr::from_str(addr).unwrap())
         .await
@@ -81,7 +91,7 @@ pub async fn dtls_listener(
         let channel_tx = channel_tx.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(
-            async move { handle_dtls_stream(socket, acceptor, &rib_tx, &channel_tx).await },
+            async move { handle_dtls_stream(socket, acceptor, &rib_tx, &channel_tx, is_remote_rib).await },
         );
     }
 }
@@ -116,3 +126,81 @@ pub async fn dtls_test_client(addr: &'static str) -> std::io::Result<SslContext>
         wr.write_all(buffer.as_bytes()).await?;
     }
 }
+
+// Connect to a target rib with dTLS.
+// todo: change gdpname from u32 to real gdpname
+pub async fn connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) -> std::io::Result<SslContext> {
+    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await?;
+    
+    // setup ssl
+    let mut connector_builder = SslConnector::builder(SslMethod::dtls())?;
+    connector_builder.set_verify(SslVerifyMode::NONE);
+    let connector = connector_builder.build().configure().unwrap();
+    let ssl = connector.into_ssl(SERVER_DOMAIN).unwrap();
+    let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
+    Pin::new(&mut stream).connect().await.unwrap();
+
+    // split the stream into read half and write half
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    let (tx, mut rx) = mpsc::channel(32);
+
+
+    // todo: replace with real GDPName
+    let m_gdp_name = match gdpname {
+        1 => GDPName([1, 1, 1, 1]),
+        2 => GDPName([2, 2, 2, 2]),
+        3 => GDPName([3, 3, 3, 3]),
+        4 => GDPName([4, 4, 4, 4]),
+        5 => GDPName([5, 5, 5, 5]),
+        6 => GDPName([6, 6, 6, 6]),
+        _ => GDPName([0, 0, 0, 0]),
+    };
+
+    let send_channel = GDPChannel {
+        gdpname: m_gdp_name, // All GDP control-plane messages use the default route
+        channel: tx.clone(),
+    };
+
+    channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
+
+    // read from target rib dlts connection
+    tokio::spawn(async move {
+        loop {
+            let mut buf = vec![0u8; 64];
+            let n = rd.read(&mut buf).await.unwrap();
+            
+            // let gdp_packet = populate_gdp_struct(buf);
+            proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
+            // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
+            
+        }
+    });
+
+    // Send a ADV message to the target in order to register self
+    let local_rib_name = AppConfig::get::<u32>("router_name").expect("Cannot advertise current router. Reason: no gdpname assigned");
+    // todo: 1. when hello to parent rib, it's ok to treat self as a client to the parent rib. (current version)
+    // todo: 2. when hello to peer routers, need to provide querying client's gdpname instead of router gdpname, so that two-way e2e connection is established
+    let buffer = format!("ADV,{},{}", local_rib_name, AppConfig::get::<String>("local_ip").unwrap()).as_bytes().to_vec();
+    wr.write_all(&buffer).await?;
+    
+    // Listen for any to-be-send message
+    loop {
+        let control_message = rx.recv().await.unwrap();
+
+        // write the update message to buffer and flush the buffer
+        let buffer = control_message.payload;
+
+        wr.write_all(&buffer).await?;
+    }
+
+}
+
+// ! Solution for recursive spawn here: https://github.com/tokio-rs/tokio/issues/2394
+pub fn spawn_connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) {
+    tokio::spawn(async move {
+        connect_target(gdpname, address, rib_tx, channel_tx).await.expect("Unable to connect to target!");
+    });
+}
+
+

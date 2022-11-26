@@ -9,11 +9,12 @@ pub type GdpName = [u8; 32];
 pub enum GdpAction {
     Noop = 0,
     Forward = 1,
-    Advertise = 2,
-    RibGet = 3,
-    RibReply = 4,
-    Nack = 5,
-    Control = 6,
+    ClientAdvertise = 2,
+    RouteAdvertise = 3,
+    RibGet = 4,
+    RibReply = 5,
+    Nack = 6,
+    Control = 7,
 }
 
 impl Default for GdpAction {
@@ -28,6 +29,7 @@ impl TryFrom<u8> for GdpAction {
     fn try_from(v: u8) -> Result<Self> {
         match v {
             x if x == GdpAction::Noop as u8 => Ok(GdpAction::Noop),
+            x if x == GdpAction::RouteAdvertise as u8 => Ok(GdpAction::RouteAdvertise),
             x if x == GdpAction::RibGet as u8 => Ok(GdpAction::RibGet),
             x if x == GdpAction::RibReply as u8 => Ok(GdpAction::RibReply),
             x if x == GdpAction::Forward as u8 => Ok(GdpAction::Forward),
@@ -68,6 +70,32 @@ pub struct GDPPacket {
     pub action: GdpAction,
     pub gdpname: GDPName,
     pub payload: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct GDPUpdate {
+    pub action: GdpAction,
+    pub host_gdpname: GDPName,
+    pub rib_gdpname: GDPName,
+    pub payload: Vec<u8>,
+}
+
+impl fmt::Display for GDPUpdate {
+    // This trait requires `fmt` with this exact signature.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Write strictly the first element into the supplied output
+        // stream: `f`. Returns `fmt::Result` which indicates whether the
+        // operation succeeded or failed. Note that `write!` uses syntax which
+        // is very similar to `println!`.
+        write!(
+            f,
+            "{:?}: {:?}",
+            self.rib_gdpname,
+            std::str::from_utf8(&self.payload)
+                .expect("parsing failure")
+                .trim_matches(char::from(0))
+        )
+    }
 }
 
 impl fmt::Display for GDPPacket {
