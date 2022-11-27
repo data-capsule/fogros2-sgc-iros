@@ -74,7 +74,7 @@ pub async fn connection_router(
                                 let rib_get = GDPPacket { 
                                     action: GdpAction::RibGet, 
                                     gdpname: pkt.gdpname, 
-                                    payload: format!("RibGet,{:?},{:?}",  AppConfig::get::<u32>("router_name").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
+                                    payload: format!("RIBGET,{:?},{:?}",  AppConfig::get::<u32>("router_name").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
                                 };
                                 let (tx, rx) = oneshot::channel::<Sender<GDPPacket>>();
                                 waiting_entries.insert(pkt.gdpname, tx);

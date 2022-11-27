@@ -45,7 +45,7 @@ pub async fn process_rib_request(
             tokio::select! {
                 
                 Some(pkt) = rib_rx.recv() => {
-                    println!("Remote RIB received: {:?}", pkt);
+                    println!("Remote RIB received: {:?}", pkt.action);
 
                     // Processing control messages
                     if pkt.action == GdpAction::ClientAdvertise {
@@ -54,8 +54,9 @@ pub async fn process_rib_request(
                             .trim()
                             .split(",")
                             .collect();
-                        let mut v = received_str[2].to_string();
-                        v.push_str(":9232");
+                        let v = received_str[2].to_string();
+                        let v = v.trim_end_matches('\0').to_string();
+                        dbg!(&v);
                         ip_table.insert(pkt.gdpname, v);
 
                         continue;

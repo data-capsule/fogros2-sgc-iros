@@ -2,6 +2,7 @@ use crate::network::udpstream::{UdpListener, UdpStream};
 use crate::pipeline::{proc_gdp_packet, proc_rib_packet, populate_gdp_struct};
 use std::{net::SocketAddr, pin::Pin, str::FromStr};
 
+use futures::future::join_all;
 use openssl::{
     pkey::PKey,
     ssl::{Ssl, SslAcceptor, SslConnector, SslContext, SslMethod, SslVerifyMode},
@@ -10,8 +11,10 @@ use openssl::{
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use utils::app_config::AppConfig;
-use crate::structs::{GDPChannel, GDPPacket, GDPName};
+use crate::structs::{GDPChannel, GDPPacket, GDPName, GdpAction};
 use tokio::sync::mpsc::{self, Sender};
+
+use async_recursion::async_recursion;
 
 const UDP_BUFFER_SIZE: usize = 4096; // 17kb
 
@@ -79,9 +82,9 @@ async fn handle_dtls_stream(
 }
 
 pub async fn dtls_listener(
-    addr: &'static str, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>, is_remote_rib: bool
+    addr: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>, is_remote_rib: bool
 ) {
-    let listener = UdpListener::bind(SocketAddr::from_str(addr).unwrap())
+    let listener = UdpListener::bind(SocketAddr::from_str(&addr).unwrap())
         .await
         .unwrap();
     let acceptor = ssl_acceptor(SERVER_CERT, SERVER_KEY).unwrap();
@@ -129,9 +132,10 @@ pub async fn dtls_test_client(addr: &'static str) -> std::io::Result<SslContext>
 
 // Connect to a target rib with dTLS.
 // todo: change gdpname from u32 to real gdpname
-pub async fn connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) -> std::io::Result<SslContext> {
+pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) -> std::io::Result<SslContext> {
+    println!("Code enters connect_target");
     let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await?;
-    
+    println!("Code established UDP connection with {:?}", address);
     // setup ssl
     let mut connector_builder = SslConnector::builder(SslMethod::dtls())?;
     connector_builder.set_verify(SslVerifyMode::NONE);
@@ -139,6 +143,8 @@ pub async fn connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPac
     let ssl = connector.into_ssl(SERVER_DOMAIN).unwrap();
     let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
     Pin::new(&mut stream).connect().await.unwrap();
+
+    println!("Code go pass Pin Stream");
 
     // split the stream into read half and write half
     let (mut rd, mut wr) = tokio::io::split(stream);
@@ -162,10 +168,112 @@ pub async fn connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPac
         channel: tx.clone(),
     };
 
+    println!("Sent channel of gdpname {:?} from connect_target", gdpname);
+
     channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
 
     // read from target rib dlts connection
-    tokio::spawn(async move {
+    let read_handle = tokio::spawn(async move {
+        loop {
+            let mut buf = vec![0u8; 64];
+            let n = rd.read(&mut buf).await.unwrap();
+            
+            // let gdp_packet = populate_gdp_struct(buf);
+            // proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
+            // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
+            let gdp_packet = populate_gdp_struct(buf);
+            let action = gdp_packet.action;
+            let gdp_name = gdp_packet.gdpname;
+
+            println!("Received RiBReply");
+            let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
+                .unwrap()
+                .trim()
+                .split(",")
+                .collect();
+            // format = {REPLY, 127.0.0.1:9232}
+            let ip_address = received_str[1].trim().trim_end_matches('\0').to_string();
+
+            let clone_rib_tx = rib_tx.clone();
+            let clone_channel_tx = channel_tx.clone();
+            tokio::spawn(async move {
+                // todo: spawn something else 
+                connect_a_router(gdp_name.0[0].into(), ip_address, clone_rib_tx, clone_channel_tx).await;
+            });
+        }
+    }); 
+    
+
+    // Send a ADV message to the target in order to register self
+    let local_rib_name = AppConfig::get::<u32>("router_name").expect("Cannot advertise current router. Reason: no gdpname assigned");
+    // todo: 1. when hello to parent rib, it's ok to treat self as a client to the parent rib. (current version)
+    // todo: 2. when hello to peer routers, need to provide querying client's gdpname instead of router gdpname, so that two-way e2e connection is established
+    let config_dtls_addr = AppConfig::get::<String>("DTLS_ADDR").unwrap();
+    let config_dtls_port: &str = config_dtls_addr.split(':').collect::<Vec<&str>>()[1];
+    let mut local_ip_address = AppConfig::get::<String>("local_ip").unwrap();
+    local_ip_address.push_str(&format!(":{}", config_dtls_port));
+    let buffer = format!("ADV,{},{}", local_rib_name, config_dtls_addr).as_bytes().to_vec();
+    wr.write_all(&buffer).await?;
+    
+    // Listen for any to-be-send message
+    let write_handle = tokio::spawn( async move {
+        loop {
+            let control_message = rx.recv().await.unwrap();
+
+            // write the update message to buffer and flush the buffer
+            let buffer = control_message.payload;
+
+            wr.write_all(&buffer).await;
+        }
+    });
+    join_all(vec![read_handle, write_handle]).await;
+    unreachable!()
+
+}
+
+
+pub async fn connect_a_router(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) -> std::io::Result<SslContext> {
+    println!("Code enters connect_target");
+    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await?;
+    println!("Code established UDP connection with {:?}", address);
+    // setup ssl
+    let mut connector_builder = SslConnector::builder(SslMethod::dtls())?;
+    connector_builder.set_verify(SslVerifyMode::NONE);
+    let connector = connector_builder.build().configure().unwrap();
+    let ssl = connector.into_ssl(SERVER_DOMAIN).unwrap();
+    let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
+    Pin::new(&mut stream).connect().await.unwrap();
+
+    println!("Code go pass Pin Stream");
+
+    // split the stream into read half and write half
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    let (tx, mut rx) = mpsc::channel(32);
+
+
+    // todo: replace with real GDPName
+    let m_gdp_name = match gdpname {
+        1 => GDPName([1, 1, 1, 1]),
+        2 => GDPName([2, 2, 2, 2]),
+        3 => GDPName([3, 3, 3, 3]),
+        4 => GDPName([4, 4, 4, 4]),
+        5 => GDPName([5, 5, 5, 5]),
+        6 => GDPName([6, 6, 6, 6]),
+        _ => GDPName([0, 0, 0, 0]),
+    };
+
+    let send_channel = GDPChannel {
+        gdpname: m_gdp_name, // All GDP control-plane messages use the default route
+        channel: tx.clone(),
+    };
+
+    println!("Sent channel of gdpname {:?} from connect_target", gdpname);
+
+    channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
+
+    // read from target rib dlts connection
+    let read_handle = tokio::spawn(async move {
         loop {
             let mut buf = vec![0u8; 64];
             let n = rd.read(&mut buf).await.unwrap();
@@ -175,32 +283,43 @@ pub async fn connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPac
             // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
             
         }
-    });
+    }); 
+    
 
     // Send a ADV message to the target in order to register self
     let local_rib_name = AppConfig::get::<u32>("router_name").expect("Cannot advertise current router. Reason: no gdpname assigned");
     // todo: 1. when hello to parent rib, it's ok to treat self as a client to the parent rib. (current version)
     // todo: 2. when hello to peer routers, need to provide querying client's gdpname instead of router gdpname, so that two-way e2e connection is established
-    let buffer = format!("ADV,{},{}", local_rib_name, AppConfig::get::<String>("local_ip").unwrap()).as_bytes().to_vec();
+    let config_dtls_addr = AppConfig::get::<String>("DTLS_ADDR").unwrap();
+    let config_dtls_port: &str = config_dtls_addr.split(':').collect::<Vec<&str>>()[1];
+    let mut local_ip_address = AppConfig::get::<String>("local_ip").unwrap();
+    local_ip_address.push_str(&format!(":{}", config_dtls_port));
+    let buffer = format!("ADV,{},{}", local_rib_name, config_dtls_addr).as_bytes().to_vec();
     wr.write_all(&buffer).await?;
     
     // Listen for any to-be-send message
-    loop {
-        let control_message = rx.recv().await.unwrap();
+    let write_handle = tokio::spawn( async move {
+        loop {
+            let control_message = rx.recv().await.unwrap();
 
-        // write the update message to buffer and flush the buffer
-        let buffer = control_message.payload;
+            // write the update message to buffer and flush the buffer
+            let buffer = control_message.payload;
 
-        wr.write_all(&buffer).await?;
-    }
-
-}
-
-// ! Solution for recursive spawn here: https://github.com/tokio-rs/tokio/issues/2394
-pub fn spawn_connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) {
-    tokio::spawn(async move {
-        connect_target(gdpname, address, rib_tx, channel_tx).await.expect("Unable to connect to target!");
+            wr.write_all(&buffer).await;
+        }
     });
+    join_all(vec![read_handle, write_handle]).await;
+    unreachable!()
+
 }
+
+// // ! Solution for recursive spawn tested here: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=73006606a3d76de1a49aeb2138e17bbe
+// pub async fn spawn_connect_target(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) {
+    
+//     tokio::spawn(async move {
+//         println!("Trying to pair with {:?} using dtls", address);
+//         connect_rib(gdpname, address, rib_tx, channel_tx).await.expect("Unable to connect to target!");
+//     }).await.unwrap();
+// }
 
 

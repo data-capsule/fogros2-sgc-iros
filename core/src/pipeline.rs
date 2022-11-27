@@ -1,6 +1,6 @@
 use std::borrow::BorrowMut;
 
-use crate::{structs::{GDPChannel, GDPName, GDPPacket, GdpAction, GDPUpdate}, network::dtls::{connect_target, spawn_connect_target}};
+use crate::{structs::{GDPChannel, GDPName, GDPPacket, GdpAction, GDPUpdate}, network::dtls::{connect_rib, connect_a_router}};
 use tokio::sync::mpsc::Sender;
 
 /// construct a gdp packet struct
@@ -17,6 +17,7 @@ pub fn populate_gdp_struct(buffer: Vec<u8>) -> GDPPacket {
         "ADV" => GdpAction::ClientAdvertise,
         "FWD" => GdpAction::Forward,
         "ROUTE_ADV" => GdpAction::RouteAdvertise,
+        "RIBGET" => GdpAction::RibGet,
         "REPLY" => GdpAction::RibReply,
         _ => GdpAction::Noop,
     };
@@ -95,18 +96,23 @@ pub async fn proc_gdp_packet(
         }
         GdpAction::RibReply => {
             // update local rib with the rib reply
-            let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
-                .unwrap()
-                .trim()
-                .split(",")
-                .collect();
-            // format = {REPLY, 127.0.0.1:9232}
-            let ip_address = received_str[1].trim();
 
-            let clone_rib_tx = rib_tx.clone();
-            let clone_channel_tx = channel_tx.clone();
-            spawn_connect_target(gdp_name.0[0].into(), ip_address.to_string(), clone_rib_tx, clone_channel_tx);
-            
+            // println!("Received RiBReply");
+            // let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
+            //     .unwrap()
+            //     .trim()
+            //     .split(",")
+            //     .collect();
+            // // format = {REPLY, 127.0.0.1:9232}
+            // let ip_address = received_str[1].trim().trim_end_matches('\0').to_string();
+
+            // let clone_rib_tx = rib_tx.clone();
+            // let clone_channel_tx = channel_tx.clone();
+            // tokio::spawn(async move {
+            //     // todo: spawn something else 
+            //     connect_a_router(gdp_name.0[0].into(), ip_address, clone_rib_tx, clone_channel_tx).await;
+            // });
+            // println!("Code go pass proc_gdp_packet");
         }
 
         GdpAction::Noop => {

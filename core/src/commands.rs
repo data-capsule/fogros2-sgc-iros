@@ -13,12 +13,12 @@ use utils::app_config::AppConfig;
 use utils::error::Result;
 
 use crate::connection_rib::connection_router;
-use crate::network::dtls::{dtls_listener, dtls_test_client, connect_target};
+use crate::network::dtls::{dtls_listener, dtls_test_client, connect_rib};
 
 use local_ip_address::local_ip;
 
 
-const DTLS_ADDR: &'static str = "127.0.0.1:9232";
+// const DTLS_ADDR: &'static str = "127.0.0.1:9232";
 const RIB_DTLS_ADDR: &'static str = "127.0.0.1:9233";
 
 /// inspired by https://stackoverflow.com/questions/71314504/how-do-i-simultaneously-read-messages-from-multiple-tokio-channels-in-a-single-t
@@ -35,7 +35,7 @@ async fn router_async_loop(target_rib_addr: Option<String>, remote_rib_name: Opt
         let dtls_target_addr = target_rib_addr.unwrap();
         let remote_rib_name = remote_rib_name.unwrap();
         AppConfig::set("remote_rib_name", &remote_rib_name.to_string()).expect("Unable to set config item: remote_rib_name");
-        tokio::spawn(connect_target(
+        tokio::spawn(connect_rib(
             remote_rib_name,
             dtls_target_addr,
             rib_tx.clone(),
@@ -45,13 +45,13 @@ async fn router_async_loop(target_rib_addr: Option<String>, remote_rib_name: Opt
     
 
     let tcp_sender_handle = tokio::spawn(tcp_listener(
-        "127.0.0.1:9997",
+        AppConfig::get::<String>("TCP_ADDR").unwrap(),
         rib_tx.clone(),
         channel_tx.clone(),
     ));
 
     let dtls_sender_handle =
-        tokio::spawn(dtls_listener(DTLS_ADDR, rib_tx.clone(), channel_tx.clone(), false));
+        tokio::spawn(dtls_listener(AppConfig::get::<String>("DTLS_ADDR").unwrap(), rib_tx.clone(), channel_tx.clone(), false));
     let rib_handle = tokio::spawn(connection_router(rib_rx, channel_rx, AppConfig::get::<u32>("router_name").expect("Unable to get Config item: router_name")));
 
     future::join_all([tcp_sender_handle, rib_handle, dtls_sender_handle]).await;
@@ -69,7 +69,7 @@ pub async fn rib_aynsc_loop() {
     // channel_tx <GDPChannel = <gdp_name, sender>>: forward channel maping to rib
     let (channel_tx, channel_rx): (Sender<GDPChannel>, Receiver<GDPChannel>) = mpsc::channel(32);
     // spawn dtls listener and handler dispatcher loop
-    let dtls_sender_handle = tokio::spawn(dtls_listener(RIB_DTLS_ADDR, rib_tx.clone(), channel_tx.clone(), true));
+    let dtls_sender_handle = tokio::spawn(dtls_listener(RIB_DTLS_ADDR.to_string(), rib_tx.clone(), channel_tx.clone(), true));
     // spawn dtls processing loop
     let request_proc_handle = tokio::spawn(remote_rib::process_rib_request(rib_rx, channel_rx));
 
@@ -89,6 +89,10 @@ pub fn router(router_name: u32, target_rib: Option<String>, remote_rib_name: Opt
     AppConfig::set("router_name", &router_name.to_string()).expect("Unable to set config item: router_name");
     let local_ip = local_ip().unwrap().to_string();
     AppConfig::set("local_ip", &local_ip).expect("Unable to set config item: local_ip");
+
+    dbg!(AppConfig::get::<String>("TCP_ADDR").unwrap());
+    dbg!(AppConfig::get::<String>("DTLS_ADDR").unwrap());
+
     router_async_loop(target_rib, remote_rib_name);
 
     Ok(())
@@ -121,6 +125,6 @@ pub fn simulate_error() -> Result<()> {
     // Log this Error simulation
     info!("We are simulating an error");
     // test_cert();
-    dtls_test_client(DTLS_ADDR).expect("DLTS Client error");
+    dtls_test_client("127.0.0.1:9232").expect("DLTS Client error");
     Ok(())
 }
