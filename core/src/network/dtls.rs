@@ -46,6 +46,8 @@ async fn handle_dtls_stream(
     let mut stream = tokio_openssl::SslStream::new(ssl, socket).unwrap();
     Pin::new(&mut stream).accept().await.unwrap();
 
+    println!("handling new dtls stream");
+
     loop {
         // TODO:
         // Question: what's the bahavior here, will it keep allocating memory?
@@ -88,6 +90,10 @@ pub async fn dtls_listener(
         .await
         .unwrap();
     let acceptor = ssl_acceptor(SERVER_CERT, SERVER_KEY).unwrap();
+    tokio::spawn(async {
+        dtls_test_client3("127.0.0.1:9234").await;
+    });
+    
     loop {
         let (socket, _) = listener.accept().await.unwrap();
         let rib_tx = rib_tx.clone();
@@ -100,7 +106,39 @@ pub async fn dtls_listener(
 }
 
 #[tokio::main]
-pub async fn dtls_test_client(addr: &'static str) -> std::io::Result<SslContext> {
+pub async fn dtls_test_client(addr: &str) -> std::io::Result<SslContext> {
+    // let stream = UdpStream::connect(SocketAddr::from_str(addr).unwrap()).await?;
+
+    // // setup ssl
+    // let mut connector_builder = SslConnector::builder(SslMethod::dtls())?;
+    // connector_builder.set_verify(SslVerifyMode::NONE);
+    // let connector = connector_builder.build().configure().unwrap();
+    // let ssl = connector.into_ssl(SERVER_DOMAIN).unwrap();
+    // let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
+    // Pin::new(&mut stream).connect().await.unwrap();
+
+    // // split the stream into read half and write half
+    // let (mut rd, mut wr) = tokio::io::split(stream);
+
+    // // read: separate thread
+    // let _dtls_sender_handle = tokio::spawn(async move {
+    //     loop {
+    //         let mut buf = vec![0u8; 1024];
+    //         let n = rd.read(&mut buf).await.unwrap();
+    //         print!("-> {}", String::from_utf8_lossy(&buf[..n]));
+    //     }
+    // });
+
+    // loop {
+    //     let mut buffer = String::new();
+    //     std::io::stdin().read_line(&mut buffer)?;
+    //     wr.write_all(buffer.as_bytes()).await?;
+    
+    // }
+    dtls_test_client2(addr).await
+}
+
+pub async fn dtls_test_client2(addr: &str) -> std::io::Result<SslContext> {
     let stream = UdpStream::connect(SocketAddr::from_str(addr).unwrap()).await?;
 
     // setup ssl
@@ -126,16 +164,18 @@ pub async fn dtls_test_client(addr: &'static str) -> std::io::Result<SslContext>
     loop {
         let mut buffer = String::new();
         std::io::stdin().read_line(&mut buffer)?;
-        wr.write_all(buffer.as_bytes()).await?;
+        // wr.write_all(buffer.as_bytes()).await?;
+        let add_clone = addr.to_string();
+        tokio::spawn(async move {
+            dtls_test_client3(&add_clone).await;
+        });
     }
 }
 
-// Connect to a target rib with dTLS.
-// todo: change gdpname from u32 to real gdpname
-pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) -> std::io::Result<SslContext> {
-    println!("Code enters connect_target");
-    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await?;
-    println!("Code established UDP connection with {:?}", address);
+
+pub async fn dtls_test_client3(addr: &str) -> std::io::Result<SslContext> {
+    let stream = UdpStream::connect(SocketAddr::from_str(addr).unwrap()).await?;
+
     // setup ssl
     let mut connector_builder = SslConnector::builder(SslMethod::dtls())?;
     connector_builder.set_verify(SslVerifyMode::NONE);
@@ -144,7 +184,43 @@ pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket
     let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
     Pin::new(&mut stream).connect().await.unwrap();
 
-    println!("Code go pass Pin Stream");
+    // split the stream into read half and write half
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    // read: separate thread
+    let _dtls_sender_handle = tokio::spawn(async move {
+        loop {
+            let mut buf = vec![0u8; 1024];
+            let n = rd.read(&mut buf).await.unwrap();
+            print!("-> {}", String::from_utf8_lossy(&buf[..n]));
+        }
+    });
+
+    let _writer_handle = tokio::spawn(async move {
+        loop {
+            let mut buffer = String::new();
+            std::io::stdin().read_line(&mut buffer).unwrap();
+            wr.write_all(buffer.as_bytes()).await.unwrap();
+        }
+    });
+    
+    join_all([_dtls_sender_handle, _writer_handle]).await;
+    unreachable!();
+}
+
+// Connect to a target rib with dTLS.
+// todo: change gdpname from u32 to real gdpname
+pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>){
+    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await.unwrap();
+
+    let mut connector_builder = SslConnector::builder(SslMethod::dtls()).unwrap();
+    connector_builder.set_verify(SslVerifyMode::NONE);
+    let connector = connector_builder.build().configure().unwrap();
+    let ssl = connector.into_ssl(SERVER_DOMAIN).unwrap();
+    let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
+    Pin::new(&mut stream).connect().await.unwrap();
+
+    // println!("Code go pass Pin Stream");
 
     // split the stream into read half and write half
     let (mut rd, mut wr) = tokio::io::split(stream);
@@ -172,37 +248,6 @@ pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket
 
     channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
 
-    // read from target rib dlts connection
-    let read_handle = tokio::spawn(async move {
-        loop {
-            let mut buf = vec![0u8; 64];
-            let n = rd.read(&mut buf).await.unwrap();
-            
-            // let gdp_packet = populate_gdp_struct(buf);
-            // proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
-            // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
-            let gdp_packet = populate_gdp_struct(buf);
-            let action = gdp_packet.action;
-            let gdp_name = gdp_packet.gdpname;
-
-            println!("Received RiBReply");
-            let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
-                .unwrap()
-                .trim()
-                .split(",")
-                .collect();
-            // format = {REPLY, 127.0.0.1:9232}
-            let ip_address = received_str[1].trim().trim_end_matches('\0').to_string();
-
-            let clone_rib_tx = rib_tx.clone();
-            let clone_channel_tx = channel_tx.clone();
-            tokio::spawn(async move {
-                // todo: spawn something else 
-                connect_a_router(gdp_name.0[0].into(), ip_address, clone_rib_tx, clone_channel_tx).await;
-            });
-        }
-    }); 
-    
 
     // Send a ADV message to the target in order to register self
     let local_rib_name = AppConfig::get::<u32>("router_name").expect("Cannot advertise current router. Reason: no gdpname assigned");
@@ -213,7 +258,7 @@ pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket
     let mut local_ip_address = AppConfig::get::<String>("local_ip").unwrap();
     local_ip_address.push_str(&format!(":{}", config_dtls_port));
     let buffer = format!("ADV,{},{}", local_rib_name, config_dtls_addr).as_bytes().to_vec();
-    wr.write_all(&buffer).await?;
+    wr.write_all(&buffer).await.unwrap();
     
     // Listen for any to-be-send message
     let write_handle = tokio::spawn( async move {
@@ -226,7 +271,38 @@ pub async fn connect_rib(gdpname: u32, address: String, rib_tx: Sender<GDPPacket
             wr.write_all(&buffer).await;
         }
     });
-    join_all(vec![read_handle, write_handle]).await;
+
+    // read from target rib dlts connection
+
+    loop {
+        let mut buf = vec![0u8; 64];
+        let n = rd.read(&mut buf).await.unwrap();
+        
+        // let gdp_packet = populate_gdp_struct(buf);
+        // proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
+        // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
+        let gdp_packet = populate_gdp_struct(buf);
+        let action = gdp_packet.action;
+        let gdp_name = gdp_packet.gdpname;
+
+        println!("Received RiBReply");
+        let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
+            .unwrap()
+            .trim()
+            .split(",")
+            .collect();
+        // format = {REPLY, 127.0.0.1:9232}
+        let ip_address = received_str[1].trim().trim_end_matches('\0').to_string();
+
+        let clone_rib_tx = rib_tx.clone();
+        let clone_channel_tx = channel_tx.clone();
+        tokio::spawn(async move {
+            // connect_a_router(gdp_name.0[0].into(), ip_address, clone_rib_tx, clone_channel_tx).await;
+            dtls_test_client3(&ip_address).await;
+        });
+    }
+
+
     unreachable!()
 
 }
@@ -272,18 +348,7 @@ pub async fn connect_a_router(gdpname: u32, address: String, rib_tx: Sender<GDPP
 
     channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
 
-    // read from target rib dlts connection
-    let read_handle = tokio::spawn(async move {
-        loop {
-            let mut buf = vec![0u8; 64];
-            let n = rd.read(&mut buf).await.unwrap();
-            
-            // let gdp_packet = populate_gdp_struct(buf);
-            proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
-            // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
-            
-        }
-    }); 
+    
     
 
     // Send a ADV message to the target in order to register self
@@ -308,7 +373,18 @@ pub async fn connect_a_router(gdpname: u32, address: String, rib_tx: Sender<GDPP
             wr.write_all(&buffer).await;
         }
     });
-    join_all(vec![read_handle, write_handle]).await;
+
+    // read from target rib dlts connection
+    loop {
+        let mut buf = vec![0u8; 64];
+        let n = rd.read(&mut buf).await.unwrap();
+        
+        // let gdp_packet = populate_gdp_struct(buf);
+        proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
+        // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
+        
+    }
+    
     unreachable!()
 
 }
