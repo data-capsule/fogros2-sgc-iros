@@ -77,20 +77,23 @@ pub async fn connection_router(
                                     payload: format!("RIBGET,{:?},{:?}",  AppConfig::get::<u32>("router_name").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
                                 };
                                 let (tx, rx) = oneshot::channel::<Sender<GDPPacket>>();
-                                waiting_entries.insert(pkt.gdpname, tx);
+                                if !waiting_entries.contains_key(&pkt.gdpname) {
+                                    waiting_entries.insert(pkt.gdpname, tx);
 
-                                println!("Sent RibGet packet: {:?}", &rib_get);
-                                remote_rib_channel.send(rib_get).await.expect("RIB:remote connection closed");
+                                    println!("Sent RibGet packet: {:?}", &rib_get);
+                                    remote_rib_channel.send(rib_get).await.expect("RIB:remote connection closed");
+                                    
+                                    
+    
+                                    tokio::spawn(async move {
+                                        let channel = rx.await;
+                                        match channel {
+                                            Ok(sender) => sender.send(pkt).await.expect("RIB: remote connection closed"),
+                                            Err(_) => todo!(),
+                                        }
+                                    });
+                                }
                                 
-                                
-
-                                tokio::spawn(async move {
-                                    let channel = rx.await;
-                                    match channel {
-                                        Ok(sender) => sender.send(pkt).await.expect("RIB: remote connection closed"),
-                                        Err(_) => todo!(),
-                                    }
-                                });
                             } else {
                                 println!("Failed to forward, destination not in forwarding table!");
                             }

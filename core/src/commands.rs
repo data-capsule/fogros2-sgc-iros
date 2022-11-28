@@ -35,26 +35,49 @@ async fn router_async_loop(target_rib_addr: Option<String>, remote_rib_name: Opt
         let dtls_target_addr = target_rib_addr.unwrap();
         let remote_rib_name = remote_rib_name.unwrap();
         AppConfig::set("remote_rib_name", &remote_rib_name.to_string()).expect("Unable to set config item: remote_rib_name");
-        tokio::spawn(connect_rib(
+        let rib_connection_handle = tokio::spawn(connect_rib(
             remote_rib_name,
             dtls_target_addr,
             rib_tx.clone(),
             channel_tx.clone()
         ));
+        let tcp_sender_handle = tokio::spawn(tcp_listener(
+            AppConfig::get::<String>("TCP_ADDR").unwrap(),
+            rib_tx.clone(),
+            channel_tx.clone(),
+        ));
+    
+        let dtls_sender_handle =
+            tokio::spawn(dtls_listener(AppConfig::get::<String>("DTLS_ADDR").unwrap(), rib_tx.clone(), channel_tx.clone(), false));
+        let rib_handle = tokio::spawn(connection_router(rib_rx, channel_rx, AppConfig::get::<u32>("router_name").expect("Unable to get Config item: router_name")));
+    
+        future::join_all([rib_connection_handle, tcp_sender_handle, rib_handle, dtls_sender_handle]).await;
+    } else {
+        let tcp_sender_handle = tokio::spawn(tcp_listener(
+            AppConfig::get::<String>("TCP_ADDR").unwrap(),
+            rib_tx.clone(),
+            channel_tx.clone(),
+        ));
+    
+        let dtls_sender_handle =
+            tokio::spawn(dtls_listener(AppConfig::get::<String>("DTLS_ADDR").unwrap(), rib_tx.clone(), channel_tx.clone(), false));
+        let rib_handle = tokio::spawn(connection_router(rib_rx, channel_rx, AppConfig::get::<u32>("router_name").expect("Unable to get Config item: router_name")));
+    
+        future::join_all([tcp_sender_handle, rib_handle, dtls_sender_handle]).await;
     }
     
 
-    let tcp_sender_handle = tokio::spawn(tcp_listener(
-        AppConfig::get::<String>("TCP_ADDR").unwrap(),
-        rib_tx.clone(),
-        channel_tx.clone(),
-    ));
+    // let tcp_sender_handle = tokio::spawn(tcp_listener(
+    //     AppConfig::get::<String>("TCP_ADDR").unwrap(),
+    //     rib_tx.clone(),
+    //     channel_tx.clone(),
+    // ));
 
-    let dtls_sender_handle =
-        tokio::spawn(dtls_listener(AppConfig::get::<String>("DTLS_ADDR").unwrap(), rib_tx.clone(), channel_tx.clone(), false));
-    let rib_handle = tokio::spawn(connection_router(rib_rx, channel_rx, AppConfig::get::<u32>("router_name").expect("Unable to get Config item: router_name")));
+    // let dtls_sender_handle =
+    //     tokio::spawn(dtls_listener(AppConfig::get::<String>("DTLS_ADDR").unwrap(), rib_tx.clone(), channel_tx.clone(), false));
+    // let rib_handle = tokio::spawn(connection_router(rib_rx, channel_rx, AppConfig::get::<u32>("router_name").expect("Unable to get Config item: router_name")));
 
-    future::join_all([tcp_sender_handle, rib_handle, dtls_sender_handle]).await;
+    // future::join_all([tcp_sender_handle, rib_handle, dtls_sender_handle]).await;
     //join!(foo_sender_handle, bar_sender_handle, receive_handle);
 }
 
