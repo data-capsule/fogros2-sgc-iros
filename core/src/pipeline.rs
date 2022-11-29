@@ -1,6 +1,6 @@
 use std::borrow::BorrowMut;
 
-use crate::{structs::{GDPChannel, GDPName, GDPPacket, GdpAction, GDPUpdate}, network::dtls::{connect_rib, connect_a_router}};
+use crate::{structs::{GDPChannel, GDPName, GDPPacket, GdpAction, GDPUpdate}, network::dtls::{connect_rib, connect_a_router, connect_with_peer}};
 use tokio::sync::mpsc::Sender;
 
 /// construct a gdp packet struct
@@ -13,6 +13,7 @@ pub fn populate_gdp_struct(buffer: Vec<u8>) -> GDPPacket {
         .trim()
         .split(",")
         .collect();
+    // println!(">>> In populate_gdp_struct, received_str={:?}", received_str);
     let m_gdp_action = match received_str[0] {
         "ADV" => GdpAction::ClientAdvertise,
         "FWD" => GdpAction::Forward,
@@ -110,22 +111,36 @@ pub async fn proc_gdp_packet(
         GdpAction::RibReply => {
             // update local rib with the rib reply
 
-            // println!("Received RiBReply");
-            // let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
-            //     .unwrap()
-            //     .trim()
-            //     .split(",")
-            //     .collect();
-            // // format = {REPLY, 127.0.0.1:9232}
-            // let ip_address = received_str[1].trim().trim_end_matches('\0').to_string();
-
-            // let clone_rib_tx = rib_tx.clone();
-            // let clone_channel_tx = channel_tx.clone();
-            // tokio::spawn(async move {
-            //     // todo: spawn something else 
-            //     connect_a_router(gdp_name.0[0].into(), ip_address, clone_rib_tx, clone_channel_tx).await;
-            // });
-            // println!("Code go pass proc_gdp_packet");
+            println!("Received RiBReply");
+            let received_str: Vec<&str> = std::str::from_utf8(&gdp_packet.payload)
+                .unwrap()
+                .trim()
+                .split(",")
+                .collect();
+            // format = {REPLY, 4, 127.0.0.1:9232}
+            // println!("from RIB, the packet is = {:?}", received_str);
+            let ip_address = received_str[2].trim().trim_end_matches('\0').to_string();
+    
+            let target_client_gdpname = match received_str[1].trim() {
+                "1" => GDPName([1, 1, 1, 1]),
+                "2" => GDPName([2, 2, 2, 2]),
+                "3" => GDPName([3, 3, 3, 3]),
+                "4" => GDPName([4, 4, 4, 4]),
+                "5" => GDPName([5, 5, 5, 5]),
+                "6" => GDPName([6, 6, 6, 6]),
+                _ => GDPName([0, 0, 0, 0]),
+            };
+            // println!("{:?}", target_client_gdpname);
+            let clone_rib_tx = rib_tx.clone();
+            let clone_channel_tx = channel_tx.clone();
+            tokio::spawn(async move {
+                connect_with_peer(
+                    target_client_gdpname.0[0].into(), 
+                    ip_address, 
+                    clone_rib_tx, 
+                    clone_channel_tx
+                ).await;
+            });
         }
 
         GdpAction::Noop => {

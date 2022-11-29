@@ -7,5 +7,9 @@ router_port=31415
 local_rib_path="/tmp/rib"
 DTLS_ADDR = "127.0.0.1:9232"
 TCP_ADDR = "127.0.0.1:9997"
+GDPNAME = 1
+HAS_PARENT = true
+REMOTE_RIB_ADDRESS = "127.0.0.1:9233"
+REMOTE_RIB_NAME = 6
 [database]
 url = "custom database url"

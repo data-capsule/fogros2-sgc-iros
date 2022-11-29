@@ -26,19 +26,22 @@ pub async fn connection_router(
         let mut waiting_entries = HashMap::new();
 
         // todo: Switch to real gdpname instead of integers
-        let parent_rib_config = AppConfig::get::<u32>("remote_rib_name");
+        let parent_rib_config = AppConfig::get::<u32>("REMOTE_RIB_NAME");
         let mut parent_rib_gdpname = None;
-        if let Ok(num) = parent_rib_config {
-            parent_rib_gdpname = match num {
-                1 => Some(GDPName([1, 1, 1, 1])),
-                2 => Some(GDPName([2, 2, 2, 2])),
-                3 => Some(GDPName([3, 3, 3, 3])),
-                4 => Some(GDPName([4, 4, 4, 4])),
-                5 => Some(GDPName([5, 5, 5, 5])),
-                6 => Some(GDPName([6, 6, 6, 6])),
-                _ => Some(GDPName([0, 0, 0, 0])),
-            };
+        if AppConfig::get::<bool>("HAS_PARENT").unwrap() == true {
+            if let Ok(num) = parent_rib_config {
+                parent_rib_gdpname = match num {
+                    1 => Some(GDPName([1, 1, 1, 1])),
+                    2 => Some(GDPName([2, 2, 2, 2])),
+                    3 => Some(GDPName([3, 3, 3, 3])),
+                    4 => Some(GDPName([4, 4, 4, 4])),
+                    5 => Some(GDPName([5, 5, 5, 5])),
+                    6 => Some(GDPName([6, 6, 6, 6])),
+                    _ => Some(GDPName([0, 0, 0, 0])),
+                };
+            }
         }
+        
 
         // loop polling from
         loop {
@@ -49,6 +52,7 @@ pub async fn connection_router(
                     println!("forwarder received: {pkt}");
 
                     // todo: process control message
+                    
                     if pkt.action == GdpAction::RouteAdvertise {
                         // only do ROUTE_ADV when there exist parent rib
                         if let Some(gdpname) = parent_rib_gdpname {
@@ -59,11 +63,13 @@ pub async fn connection_router(
                             continue;
                         }
                     }
+                    
+                    
 
                     // find where to route
                     match connection_rib_table.get(&pkt.gdpname) {
                         Some(routing_dst) => {
-                            println!("fwd!");
+                            // println!("fwd!");
                             routing_dst.send(pkt).await.expect("RIB: remote connection closed");
                         }
                         None => {
@@ -75,7 +81,7 @@ pub async fn connection_router(
                                 let rib_get = GDPPacket { 
                                     action: GdpAction::RibGet, 
                                     gdpname: pkt.gdpname, 
-                                    payload: format!("RIBGET,{:?},{:?}",  AppConfig::get::<u32>("router_name").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
+                                    payload: format!("RIBGET,{:?},{:?}",  AppConfig::get::<u32>("GDPNAME").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
                                 };
                                 let (tx, mut rx) = mpsc::channel::<Sender<GDPPacket>>(32);
                                 if !waiting_entries.contains_key(&pkt.gdpname) {
@@ -88,7 +94,7 @@ pub async fn connection_router(
     
                                     tokio::spawn(async move {
                                         let channel = rx.recv().await;
-                                        println!("Got rib reply channel, sending the queued packet");
+                                        // println!("Got rib reply channel, sending the queued packet");
                                         match channel {
                                             Some(sender) => sender.send(pkt).await.expect("RIB: remote connection closed"),
                                             None => todo!(),
@@ -107,7 +113,7 @@ pub async fn connection_router(
                 Some(channel) = channel_rx.recv() => {
                     println!("channel registry received {:}", channel.gdpname);
                     if waiting_entries.contains_key(&channel.gdpname) {
-                        println!("Fetched a channel from higher RIB");
+                        println!("Fetched a waiting channel from higher RIB");
                         waiting_entries
                             .remove(&channel.gdpname)
                             .unwrap()

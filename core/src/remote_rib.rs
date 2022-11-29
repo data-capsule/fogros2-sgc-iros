@@ -1,26 +1,3 @@
-// #[tokio::main]
-// async fn router_async_loop() {
-//     // rib_rx <GDPPacket = [u8]>: forward gdppacket to rib
-//     let (rib_tx, rib_rx) = mpsc::channel(32);
-//     // channel_tx <GDPChannel = <gdp_name, sender>>: forward channel maping to rib
-//     let (channel_tx, channel_rx) = mpsc::channel(32);
-
-//     let tcp_sender_handle = tokio::spawn(tcp_listener(
-//         "127.0.0.1:9997",
-//         rib_tx.clone(),
-//         channel_tx.clone(),
-//     ));
-
-//     let dtls_sender_handle =
-//         tokio::spawn(dtls_listener(dtls_addr, rib_tx.clone(), channel_tx.clone()));
-//     let rib_handle = tokio::spawn(connection_router(rib_rx, channel_rx));
-
-
-
-//     future::join_all([tcp_sender_handle, rib_handle, dtls_sender_handle]).await;
-//     //join!(foo_sender_handle, bar_sender_handle, receive_handle);
-// }
-
 use multimap::MultiMap;
 use tokio::sync::mpsc::{Sender, Receiver};
 
@@ -87,7 +64,7 @@ pub async fn process_rib_request(
                         };
                         host_table.insert(host_gdpname, router_gdpname);
 
-                        println!("Received RouteAdvertise, host's gdpname: {:?}, delegated router's gdpname: {:?}", host_gdpname, router_gdpname);
+                        println!("{{RouteAdvertise}}, host's gdpname: {:?}, delegated router's gdpname: {:?}", host_gdpname, router_gdpname);
 
                         continue;
                     } else if pkt.action == GdpAction::RibGet {
@@ -106,7 +83,7 @@ pub async fn process_rib_request(
                             "6" => GDPName([6, 6, 6, 6]),
                             _ => GDPName([0, 0, 0, 0]),
                         };
-                        println!("Got RibGet Request, queries gdpname is = {:?}", queried_gdpname);
+                        println!("{{RibGet}}, queries gdpname is = {:?}", queried_gdpname);
                         if let Some(router_gdpname) = host_table.get(&queried_gdpname) {
                             if let Some(router_ip) = ip_table.get(&router_gdpname) {
                                 let rib_reply_pkt = GDPPacket { 

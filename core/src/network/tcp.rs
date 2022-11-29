@@ -33,7 +33,7 @@ async fn handle_tcp_stream(
                 match stream.try_read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        println!("read {} bytes", n);
+                        // println!("read {} bytes", n);
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         continue;
@@ -60,7 +60,7 @@ async fn handle_tcp_stream(
                 // if the readiness event is a false positive.
                 match stream.try_write(&pkt_to_forward.payload) {
                     Ok(n) => {
-                        println!("write {} bytes", n);
+                        // println!("write {} bytes", n);
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         continue
