@@ -1,9 +1,10 @@
 use crate::{structs::{GDPChannel, GDPName, GDPPacket, GdpAction}, network::udpstream::UdpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, pin::Pin, sync::{Arc, Mutex}};
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use tokio::{sync::mpsc::{Receiver, Sender}, io::{AsyncReadExt, AsyncWriteExt}};
+use tokio::{sync::mpsc::{self, Receiver, Sender}, io::{AsyncReadExt, AsyncWriteExt}};
 use utils::app_config::AppConfig;
 use tokio::sync::oneshot;
+
 
 const SERVER_DOMAIN: &'static str = "pourali.com";
 
@@ -76,7 +77,7 @@ pub async fn connection_router(
                                     gdpname: pkt.gdpname, 
                                     payload: format!("RIBGET,{:?},{:?}",  AppConfig::get::<u32>("router_name").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
                                 };
-                                let (tx, rx) = oneshot::channel::<Sender<GDPPacket>>();
+                                let (tx, mut rx) = mpsc::channel::<Sender<GDPPacket>>(32);
                                 if !waiting_entries.contains_key(&pkt.gdpname) {
                                     waiting_entries.insert(pkt.gdpname, tx);
 
@@ -86,10 +87,11 @@ pub async fn connection_router(
                                     
     
                                     tokio::spawn(async move {
-                                        let channel = rx.await;
+                                        let channel = rx.recv().await;
+                                        println!("Got rib reply channel, sending the queued packet");
                                         match channel {
-                                            Ok(sender) => sender.send(pkt).await.expect("RIB: remote connection closed"),
-                                            Err(_) => todo!(),
+                                            Some(sender) => sender.send(pkt).await.expect("RIB: remote connection closed"),
+                                            None => todo!(),
                                         }
                                     });
                                 }
@@ -110,7 +112,7 @@ pub async fn connection_router(
                             .remove(&channel.gdpname)
                             .unwrap()
                             .send(channel.channel.clone())
-                            .expect(&format!("Unable to send wake signal to thread waiting for {:?}", &channel.gdpname));
+                            .await.expect(&format!("Unable to send wake signal to thread waiting for {:?}", &channel.gdpname));
                     }
                     connection_rib_table.insert(
                         channel.gdpname,
@@ -119,5 +121,5 @@ pub async fn connection_router(
                 },
             }
         }
-    });
+    }).await;
 }

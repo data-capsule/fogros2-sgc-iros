@@ -19,6 +19,7 @@ pub fn populate_gdp_struct(buffer: Vec<u8>) -> GDPPacket {
         "ROUTE_ADV" => GdpAction::RouteAdvertise,
         "RIBGET" => GdpAction::RibGet,
         "REPLY" => GdpAction::RibReply,
+        "PEERADV" => GdpAction::PeerAdvertise,
         _ => GdpAction::Noop,
     };
 
@@ -84,6 +85,18 @@ pub async fn proc_gdp_packet(
             };
             rib_tx.send(route_advertise).await.expect("rib_tx channel closed!");
         }
+        GdpAction::PeerAdvertise => {
+            //construct and send channel to RIB
+            let channel = GDPChannel {
+                gdpname: gdp_name,
+                channel: m_tx.clone(),
+            };
+            channel_tx
+                .send(channel)
+                .await
+                .expect("channel_tx channel closed!");
+        }
+
         GdpAction::Forward => {
             //send the packet to RIB
             rib_tx

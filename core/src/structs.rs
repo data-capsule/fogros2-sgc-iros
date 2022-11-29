@@ -10,11 +10,12 @@ pub enum GdpAction {
     Noop = 0,
     Forward = 1,
     ClientAdvertise = 2,
-    RouteAdvertise = 3,
-    RibGet = 4,
-    RibReply = 5,
-    Nack = 6,
-    Control = 7,
+    PeerAdvertise = 3,
+    RouteAdvertise = 4,
+    RibGet = 5,
+    RibReply = 6,
+    Nack = 7,
+    Control = 8,
 }
 
 impl Default for GdpAction {
@@ -31,6 +32,8 @@ impl TryFrom<u8> for GdpAction {
             x if x == GdpAction::Noop as u8 => Ok(GdpAction::Noop),
             x if x == GdpAction::RouteAdvertise as u8 => Ok(GdpAction::RouteAdvertise),
             x if x == GdpAction::RibGet as u8 => Ok(GdpAction::RibGet),
+            x if x == GdpAction::ClientAdvertise as u8 => Ok(GdpAction::ClientAdvertise),
+            x if x == GdpAction::PeerAdvertise as u8 => Ok(GdpAction::PeerAdvertise),
             x if x == GdpAction::RibReply as u8 => Ok(GdpAction::RibReply),
             x if x == GdpAction::Forward as u8 => Ok(GdpAction::Forward),
             x if x == GdpAction::Nack as u8 => Ok(GdpAction::Nack),

@@ -96,7 +96,8 @@ pub async fn process_rib_request(
                             .trim()
                             .split(",")
                             .collect();
-                        let host_gdpname = match &received_str[2][0..1] {
+                        
+                        let queried_gdpname = match &received_str[2][0..1] {
                             "1" => GDPName([1, 1, 1, 1]),
                             "2" => GDPName([2, 2, 2, 2]),
                             "3" => GDPName([3, 3, 3, 3]),
@@ -105,12 +106,13 @@ pub async fn process_rib_request(
                             "6" => GDPName([6, 6, 6, 6]),
                             _ => GDPName([0, 0, 0, 0]),
                         };
-                        if let Some(router_gdpname) = host_table.get(&host_gdpname) {
+                        println!("Got RibGet Request, queries gdpname is = {:?}", queried_gdpname);
+                        if let Some(router_gdpname) = host_table.get(&queried_gdpname) {
                             if let Some(router_ip) = ip_table.get(&router_gdpname) {
                                 let rib_reply_pkt = GDPPacket { 
                                     action: GdpAction::RibReply, 
-                                    gdpname: GDPName::default(), 
-                                    payload: format!("REPLY, {}", router_ip).as_bytes().to_vec() 
+                                    gdpname: queried_gdpname, 
+                                    payload: format!("REPLY, {}, {}", queried_gdpname.0[0], router_ip).as_bytes().to_vec() 
                                 };
                                 match connection_rib_table.get(&pkt.gdpname) {
                                     Some(dst) => {
@@ -122,6 +124,7 @@ pub async fn process_rib_request(
                                 }
                             }
                         }
+                        continue;
                     }
                 }
 
@@ -135,7 +138,7 @@ pub async fn process_rib_request(
                 }
             }
         }
-    });
+    }).await;
     
 }
 

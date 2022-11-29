@@ -25,6 +25,10 @@ const RIB_DTLS_ADDR: &'static str = "127.0.0.1:9233";
 /// TODO: later put to another file
 #[tokio::main]
 async fn router_async_loop(target_rib_addr: Option<String>, remote_rib_name: Option<u32>) {
+    if AppConfig::get::<String>("DTLS_ADDR").unwrap() == "127.0.0.1:9232" {
+        console_subscriber::init();
+    }
+
     // rib_rx <GDPPacket = [u8]>: forward gdppacket to rib
     let (rib_tx, rib_rx) = mpsc::channel(32);
     // channel_tx <GDPChannel = <gdp_name, sender>>: forward channel maping to rib
@@ -86,7 +90,6 @@ async fn router_async_loop(target_rib_addr: Option<String>, remote_rib_name: Opt
 
 #[tokio::main]
 pub async fn rib_aynsc_loop() {
-    
     // rib_rx <GDPPacket = [u8]>: forward gdppacket to rib
     let (rib_tx, rib_rx): (Sender<GDPPacket>, Receiver<GDPPacket>) = mpsc::channel(32);
     // channel_tx <GDPChannel = <gdp_name, sender>>: forward channel maping to rib
@@ -145,6 +148,7 @@ pub fn config() -> Result<()> {
 
 /// Simulate an error
 pub fn simulate_error() -> Result<()> {
+    console_subscriber::init();
     // Log this Error simulation
     info!("We are simulating an error");
     // test_cert();
