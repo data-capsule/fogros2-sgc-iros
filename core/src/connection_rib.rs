@@ -84,7 +84,7 @@ pub async fn connection_router(
                                     payload: format!("RIBGET,{:?},{:?}",  AppConfig::get::<u32>("GDPNAME").unwrap(), pkt.gdpname.0[0]).as_bytes().to_vec()
                                 };
                                 let (tx, mut rx) = mpsc::channel::<Sender<GDPPacket>>(32);
-                                if !waiting_entries.contains_key(&pkt.gdpname) {
+                                // if !waiting_entries.contains_key(&pkt.gdpname) {
                                     waiting_entries.insert(pkt.gdpname, tx);
 
                                     println!("Sent RibGet packet: {:?}", &rib_get);
@@ -97,10 +97,10 @@ pub async fn connection_router(
                                         // println!("Got rib reply channel, sending the queued packet");
                                         match channel {
                                             Some(sender) => sender.send(pkt).await.expect("RIB: remote connection closed"),
-                                            None => todo!(),
+                                            None => {},
                                         }
                                     });
-                                }
+                                // }
                                 
                             } else {
                                 println!("Failed to forward, destination not in forwarding table!");
