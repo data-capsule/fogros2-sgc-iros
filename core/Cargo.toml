@@ -6,7 +6,7 @@ description = "The application core code"
 edition = "2021"
 
 [features]
-default = []
+default = ["ros"]
 ros = ["dep:r2r"]
 
 [dependencies]

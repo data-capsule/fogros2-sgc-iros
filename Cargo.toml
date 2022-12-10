@@ -32,10 +32,13 @@ human-panic = "1.0.3"
 better-panic = "0.3.0"
 log = "0.4.14"
 env_logger = "0.10.0"
+tokio = { version = "1.21.2", features = ["full"] }
 
 [dev-dependencies]
 assert_cmd = "2.0.4"
 predicates = "2.1.1"
+pprof = { version = "0.11.0", features = ["flamegraph"] }
+criterion = "0.4"
 
 [profile.dev]
 opt-level=0
@@ -68,3 +71,7 @@ rpath = false
 lto = true
 debug-assertions = false
 codegen-units = 1
+
+[[bench]]
+name = "ros"
+harness = false
