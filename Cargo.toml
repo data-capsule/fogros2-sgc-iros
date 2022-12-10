@@ -38,7 +38,9 @@ tokio = { version = "1.21.2", features = ["full"] }
 assert_cmd = "2.0.4"
 predicates = "2.1.1"
 pprof = { version = "0.11.0", features = ["flamegraph"] }
-criterion = "0.4"
+criterion = {version = "0.4", features = ["async_futures"]}
+r2r = {version = "0.6.2"}
+futures = "0.3.19"
 
 [profile.dev]
 opt-level=0
