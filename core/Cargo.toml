@@ -36,6 +36,8 @@ tokio-openssl = '0.6'
 tonic = "0.8"
 prost = "0.11"
 
+redis = "0.22.2"
+
 [dependencies.r2r]
 r2r = "0.6.2"
 optional = true 
