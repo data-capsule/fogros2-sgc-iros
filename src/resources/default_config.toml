@@ -5,5 +5,6 @@ tcp_port = "9997"
 dtls_port = "9232"
 grpc_port = "50051"
 default_gateway = "localhost"
+ip_address = "128.32.37.82"
 [database]
 url = "custom database url"

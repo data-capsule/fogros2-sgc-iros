@@ -28,6 +28,7 @@ pub struct AppConfig {
     pub dtls_port: String,
     pub grpc_port: String,
     pub default_gateway: String,
+    pub ip_address: String,
 }
 
 impl AppConfig {
