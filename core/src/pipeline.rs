@@ -36,6 +36,7 @@ pub fn populate_gdp_struct_from_bytes(buffer: Vec<u8>) -> GDPPacket {
         "ADV" => GdpAction::Advertise,
         "FWD" => GdpAction::Forward,
         "PUB" => GdpAction::PubAdvertise,
+        "SUB" => GdpAction::SubAdvertise,
         _ => GdpAction::Noop,
     };
 
@@ -117,6 +118,14 @@ pub async fn proc_gdp_packet(
         }
 
         GdpAction::PubAdvertise => {
+            //send the packet to RIB
+            rib_tx
+                .send(gdp_packet)
+                .await
+                .expect("rib_tx channel closed!");
+        }
+
+        GdpAction::SubAdvertise => {
             //send the packet to RIB
             rib_tx
                 .send(gdp_packet)

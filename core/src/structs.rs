@@ -174,5 +174,46 @@ impl PubPacket {
     }
 }
 
+pub struct SubPacket {
+    pub creator: GDPName,
+    pub topic_name: GDPName,
+}
+
+impl SubPacket {
+    pub fn from_vec_bytes(buffer: &Vec<u8>) -> SubPacket {
+        let received_str: Vec<&str> = std::str::from_utf8(&buffer)
+            .unwrap()
+            .trim()
+            .split(",")
+            .collect();
+        
+        // assert_eq!(buffer.len(), 3, "The buffer does not cannot be deserialized to a PubPacket");
+
+        let creator = match &received_str[1][0..1] {
+            "1" => GDPName([1, 1, 1, 1]),
+            "2" => GDPName([2, 2, 2, 2]),
+            "3" => GDPName([3, 3, 3, 3]),
+            "4" => GDPName([4, 4, 4, 4]),
+            "5" => GDPName([5, 5, 5, 5]),
+            _ => GDPName([0, 0, 0, 0]),
+        };
+
+        let topic_name = match &received_str[2][0..1] {
+            "1" => GDPName([1, 1, 1, 1]),
+            "2" => GDPName([2, 2, 2, 2]),
+            "3" => GDPName([3, 3, 3, 3]),
+            "4" => GDPName([4, 4, 4, 4]),
+            "5" => GDPName([5, 5, 5, 5]),
+            _ => GDPName([0, 0, 0, 0]),
+        };
+
+        SubPacket {
+            creator,
+            topic_name
+        }
+    }
+}
+
+
 
 pub type SubscriberInfo = (GDPName, Ipv4Addr);

@@ -1,6 +1,8 @@
 use crate::pipeline::{populate_gdp_struct_from_bytes, proc_gdp_packet};
-use crate::structs::{GDPChannel, GDPPacket, Packet};
+use crate::structs::{GDPChannel, GDPPacket, Packet, GDPName};
 use std::io;
+use futures::future::join_all;
+use tokio::io::{split, AsyncWriteExt, AsyncReadExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Sender};
 
@@ -75,6 +77,58 @@ async fn handle_tcp_stream(
             },
         }
     }
+}
+
+
+// Establish a TCP connection with target router who is subscribing to gdpname
+pub async fn setup_tcp_connection_to(gdpname: GDPName, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) {
+    // TCP connect with peer router
+    let socket = TcpStream::connect(address).await.unwrap();
+    let (mut rd, mut wr) = split(socket);
+
+    let (tx, mut rx) = mpsc::channel(32);
+
+    
+
+    let send_channel = GDPChannel {
+        gdpname: gdpname, 
+        channel: tx.clone(),
+    };
+
+    channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
+
+    let write_handle = tokio::spawn( async move {
+        loop {
+            let control_message = rx.recv().await.unwrap();
+
+            // write the update message to buffer and flush the buffer
+            let buffer = control_message.payload.unwrap();
+
+            wr.write_all(&buffer).await;
+        }
+    });
+
+    // read from target router tcp connection
+    let read_handle = tokio::spawn(async move {
+        loop {
+            let mut buf = vec![0u8; 64];
+            let n = rd.read(&mut buf).await.unwrap();
+            
+            
+            // let gdp_packet = populate_gdp_struct_from_bytes(buf);
+            // println!("Got a packet from peer. Packet = {:?}", gdp_packet.action);
+            // proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
+            // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
+            let rib_tx_clone = rib_tx.clone();
+            let channel_tx_clone = channel_tx.clone();
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                let packet = populate_gdp_struct_from_bytes(buf);
+                proc_gdp_packet(packet, &rib_tx_clone, &channel_tx_clone, &tx_clone).await;
+            });
+        }
+    });
+    join_all([write_handle, read_handle]).await;
 }
 
 /// listen at @param address and process on tcp accept()
