@@ -2,14 +2,16 @@ use crate::network::udpstream::{UdpListener, UdpStream};
 use crate::pipeline::{populate_gdp_struct_from_bytes, proc_gdp_packet};
 use std::{net::SocketAddr, pin::Pin, str::FromStr};
 
+use futures::future::join_all;
 use openssl::{
     pkey::PKey,
     ssl::{Ssl, SslAcceptor, SslConnector, SslContext, SslMethod, SslVerifyMode},
     x509::X509,
 };
+use tokio::net::TcpStream;
 
-use crate::structs::{GDPChannel, GDPPacket, Packet};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::structs::{GDPChannel, GDPPacket, Packet, GDPName};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, split};
 use tokio::sync::mpsc::{self, Sender};
 
 const UDP_BUFFER_SIZE: usize = 4096; // 17kb
@@ -87,6 +89,137 @@ pub async fn dtls_listener(
             async move { handle_dtls_stream(socket, acceptor, &rib_tx, &channel_tx).await },
         );
     }
+}
+
+
+
+pub async fn setup_dtls_connection_to(gdpname: GDPName, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>){
+    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await.unwrap();
+
+    let mut connector_builder = SslConnector::builder(SslMethod::dtls()).unwrap();
+    connector_builder.set_verify(SslVerifyMode::NONE);
+    let connector = connector_builder.build().configure().unwrap();
+    let ssl = connector.into_ssl(SERVER_DOMAIN).unwrap();
+    let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
+    Pin::new(&mut stream).connect().await.unwrap();
+
+    // println!("Code go pass Pin Stream");
+
+    // split the stream into read half and write half
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    let (tx, mut rx) = mpsc::channel(32);
+
+
+
+    let send_channel = GDPChannel {
+        gdpname: gdpname, 
+        channel: tx.clone(),
+    };
+
+    // println!("Sent channel of gdpname {:?} from connect_target", gdpname);
+
+    channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
+
+
+    // // Send a ADV message to the target in order to register self
+    // let local_rib_name = AppConfig::get::<u32>("GDPNAME").expect("Cannot advertise current router. Reason: no gdpname assigned");
+    
+    // // todo: when hello to peer routers, need to provide querying client's gdpname instead of router gdpname, so that two-way e2e connection is established
+    // // !(more critical) todo: current peer router connection is using TCP due to bugs in dTLS implementation
+    // // !        when a router advertise itself to the remote rib, it also gives its TCP address to the RIB
+    // let config_dtls_addr = AppConfig::get::<String>("DTLS_ADDR").unwrap();
+    // let config_dtls_port: &str = config_dtls_addr.split(':').collect::<Vec<&str>>()[1];
+
+    // let config_tcp_addr = AppConfig::get::<String>("TCP_ADDR").unwrap();
+    // let config_tcp_port: &str = config_tcp_addr.split(':').collect::<Vec<&str>>()[1];
+    
+    // let buffer = format!("ADV,{},{}", local_rib_name, config_tcp_addr).as_bytes().to_vec();
+    // wr.write_all(&buffer).await.unwrap();
+    
+
+    
+
+    loop {
+
+        let mut buf = vec![0u8; 64];
+
+        tokio::select! {
+            control_message = rx.recv() => {
+                let buffer = control_message.unwrap().payload.expect("payload is empty");
+                wr.write_all(&buffer).await.unwrap();
+            }
+
+            n = rd.read(&mut buf) => {
+                let rib_tx_clone = rib_tx.clone();
+                let channel_tx_clone = channel_tx.clone();
+                let tx_clone = tx.clone();
+                tokio::spawn(async move {
+                    let packet = populate_gdp_struct_from_bytes(buf);
+                    proc_gdp_packet(packet, &rib_tx_clone, &channel_tx_clone, &tx_clone).await;
+                });
+               
+            }
+        }
+    }
+}
+
+
+pub async fn connect_with_peer(gdpname: GDPName, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>) {
+    // TCP connect with peer router
+    let socket = TcpStream::connect(address).await.unwrap();
+    let (mut rd, mut wr) = split(socket);
+
+    let (tx, mut rx) = mpsc::channel(32);
+
+    
+
+    let send_channel = GDPChannel {
+        gdpname: gdpname, 
+        channel: tx.clone(),
+    };
+
+    // println!("Sent channel of gdpname {:?} from connect_target", gdpname);
+
+    channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
+
+    // // Send a ADV message to the target in order to register self
+    // let local_rib_name = AppConfig::get::<u32>("GDPNAME").expect("Cannot advertise current router. Reason: no gdpname assigned");
+    // // todo: 1. when hello to parent rib, it's ok to treat self as a client to the parent rib. (current version)
+    // // todo: 2. when hello to peer routers, need to provide querying client's gdpname instead of router gdpname, so that two-way e2e connection is established
+    // let config_dtls_addr = AppConfig::get::<String>("DTLS_ADDR").unwrap();
+    // let config_dtls_port: &str = config_dtls_addr.split(':').collect::<Vec<&str>>()[1];
+    // let mut local_ip_address = AppConfig::get::<String>("local_ip").unwrap();
+    // local_ip_address.push_str(&format!(":{}", config_dtls_port));
+    // let buffer = format!("PEERADV,{},{}", local_rib_name, config_dtls_addr).as_bytes().to_vec();
+    // wr.write_all(&buffer).await.unwrap();
+
+    let write_handle = tokio::spawn( async move {
+        loop {
+            let control_message = rx.recv().await.unwrap();
+
+            // write the update message to buffer and flush the buffer
+            let buffer = control_message.payload.unwrap();
+
+            wr.write_all(&buffer).await;
+        }
+    });
+
+    // read from target rib tcp connection
+    let read_handle = tokio::spawn(async move {
+        loop {
+            let mut buf = vec![0u8; 64];
+            let n = rd.read(&mut buf).await.unwrap();
+            
+            
+            // let gdp_packet = populate_gdp_struct(buf);
+            // println!("Got a packet from peer. Packet = {:?}", gdp_packet.action);
+            // proc_gdp_packet(buf.to_vec(), &rib_tx,&channel_tx, &tx.clone()).await;
+            // rib_tx.send(gdp_packet).await.expect("rib_tx channel closed!");
+            
+        }
+    });
+    join_all([write_handle, read_handle]).await;
 }
 
 #[tokio::main]

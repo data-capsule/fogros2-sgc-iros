@@ -1,6 +1,10 @@
 use crate::gdp_proto::GdpUpdate;
-use crate::structs::{GDPChannel, GDPName, GDPPacket};
-use std::collections::HashMap;
+use crate::network::dtls::{setup_dtls_connection_to, connect_with_peer};
+use crate::rib::{RIBClient, TopicRecord};
+use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction, PubPacket, SubscriberInfo};
+use std::collections::{HashMap, HashSet};
+use std::net::Ipv4Addr;
+use multimap::MultiMap;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 /// receive, check, and route GDP messages
@@ -12,13 +16,21 @@ use tokio::sync::mpsc::{Receiver, Sender};
 /// forward the packet to corresponding send_tx
 pub async fn connection_router(
     mut rib_rx: Receiver<GDPPacket>, mut stat_rs: Receiver<GdpUpdate>,
-    mut channel_rx: Receiver<GDPChannel>,
+    mut channel_rx: Receiver<GDPChannel>, mut rib_tx: Sender<GDPPacket>, mut channel_tx: Sender<GDPChannel>
 ) {
     // TODO: currently, we only take one rx due to select! limitation
     // will use FutureUnordered Instead
     let _receive_handle = tokio::spawn(async move {
-        let mut coonection_rib_table: HashMap<GDPName, Sender<GDPPacket>> = HashMap::new();
-
+        // map Host GDPName to Sending Channel
+        let mut coonection_rib_table: MultiMap<GDPName, Sender<GDPPacket>> = MultiMap::new();
+        // map Topic GDPName to Host GDPName
+        let mut pub_nodes_creators: HashMap<GDPName, GDPName> = HashMap::new();
+        // map Topic GDPName to SubscriberInfo
+        let mut sub_nodes_info: HashMap<GDPName, HashMap<String, Ipv4Addr>> = HashMap::new();
+        // RIBClient abstraction, all RIB interaction should use this object 
+        // todo Jiachen: move password to a secure config file
+        let mut rib_client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
+        
         // loop polling from
         loop {
             tokio::select! {
@@ -27,16 +39,69 @@ pub async fn connection_router(
                 Some(pkt) = rib_rx.recv() => {
                     info!("forwarder received: {pkt}");
 
-                    // find where to route
-                    match coonection_rib_table.get(&pkt.gdpname) {
-                        Some(routing_dst) => {
-                            debug!("fwd!");
-                            routing_dst.send(pkt).await.expect("RIB: remote connection closed");
+                    // Control plane packet reaction
+                    // todo Jiachen: Maybe we should consider splitting the data and control pipeline for better readability
+                    if pkt.action == GdpAction::PubAdvertise {
+                        let pub_packet = PubPacket::from_vec_bytes(&pkt.payload.as_ref().expect("Packet payload is empty"));
+                        pub_nodes_creators.insert(pub_packet.topic_name, pub_packet.creator);
+                        
+                        // publish the pub node to the remote RIB
+                        let result = rib_client.create_pub_node(&format!("{}", pub_packet.topic_name));
+                        
+                        match result {
+                            Err(_) => {
+                                warn!("Failed to create a pub node in the remote RIB");
+                            },
+                            Ok(kv_map) => {
+                                for (key, value) in &kv_map {
+                                    let topic_record: TopicRecord = serde_json::from_str(value).expect("TopicRecord deserialization failed");
+                                    let entry = sub_nodes_info.entry(pub_packet.topic_name).or_insert(HashMap::new());
+                                    entry.insert(key.to_string(), topic_record.ip_address.parse::<Ipv4Addr>().unwrap());
+                                }
+                            }
                         }
-                        None => {
-                            info!("{:} is not there, broadcasting...", pkt.gdpname);
-                            for dst in coonection_rib_table.values(){
-                                dst.send(pkt.clone()).await.expect("RIB: remote connection closed");
+
+                        // ! Establish dtls connections with each subscribing router
+                        let subscriber_info = sub_nodes_info.get(&pub_packet.topic_name);
+                        let unique_IP_set = match subscriber_info {
+                            Some(hashmap) => {
+                                hashmap.values().cloned().collect::<HashSet<Ipv4Addr>>() // This can be slow due to the clone if we have too many sub nodes
+                            },
+                            None => {HashSet::new()},
+                        };
+                        for ip in unique_IP_set.into_iter() {
+                            let rib_tx_cloned = rib_tx.clone();
+                            let channel_tx_cloned = channel_tx.clone();
+                            tokio::spawn(async move {
+                                let mut socket_addr = ip.to_string();
+                                // socket_addr.push_str(":9232");
+                                socket_addr.push_str(":9997");
+                                connect_with_peer(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                // setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                            });
+                        }
+                        dbg!(&coonection_rib_table);
+                        
+                    } else {
+                        // find where to route
+                        match coonection_rib_table.get_vec(&pkt.gdpname) {
+                            Some(routing_dsts) => {
+                                for routing_dst in routing_dsts {
+                                    debug!("fwd!");
+                                    let pkt = pkt.clone();
+                                    routing_dst.send(pkt).await.expect("RIB: remote connection closed");
+                                }
+                                
+                            }
+                            None => {
+                                info!("{:} is not there, broadcasting...", pkt.gdpname);
+                                for (key, value) in coonection_rib_table.iter_all() {
+                                    for dst in value {
+                                        dst.send(pkt.clone()).await.expect("RIB: remote connection closed");
+
+                                    }
+                                }
+                                
                             }
                         }
                     }

@@ -1,4 +1,4 @@
-use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction};
+use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction, PubPacket};
 use tokio::sync::mpsc::Sender;
 
 /// construct gdp struct from bytes
@@ -35,12 +35,16 @@ pub fn populate_gdp_struct_from_bytes(buffer: Vec<u8>) -> GDPPacket {
     let m_gdp_action = match received_str[0] {
         "ADV" => GdpAction::Advertise,
         "FWD" => GdpAction::Forward,
+        "PUB" => GdpAction::PubAdvertise,
         _ => GdpAction::Noop,
     };
 
     let m_gdp_name = match &received_str[1][0..1] {
         "1" => GDPName([1, 1, 1, 1]),
         "2" => GDPName([2, 2, 2, 2]),
+        "3" => GDPName([3, 3, 3, 3]),
+        "4" => GDPName([4, 4, 4, 4]),
+        "5" => GDPName([5, 5, 5, 5]),
         _ => GDPName([0, 0, 0, 0]),
     };
 
@@ -110,6 +114,14 @@ pub async fn proc_gdp_packet(
         }
         GdpAction::RibReply => {
             // update local rib with the rib reply
+        }
+
+        GdpAction::PubAdvertise => {
+            //send the packet to RIB
+            rib_tx
+                .send(gdp_packet)
+                .await
+                .expect("rib_tx channel closed!");
         }
 
         GdpAction::Noop => {

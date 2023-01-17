@@ -58,9 +58,9 @@ struct TopicMeta {
 }
 
 #[derive(Serialize, Deserialize)]
-struct TopicRecord {
-    ip_address: Ipv4Addr,
-    node_type: u8, // 0 represents sub node, 1 represents pub node
+pub struct TopicRecord {
+    pub ip_address: String,
+    pub node_type: u8, // 0 represents sub node, 1 represents pub node
 }
 
 impl RIBClient {
@@ -76,7 +76,7 @@ impl RIBClient {
         })
     }
 
-    pub fn create_pub_node(&mut self, topic_name: &str) -> redis::RedisResult<()> {
+    pub fn create_pub_node(&mut self, topic_name: &str) -> redis::RedisResult<HashMap<String, String>> {
         // keys will be watched for the transaction
         // if corresponding values changed, transaction will be aborted
         // and retry in a loop until it succeed
@@ -88,9 +88,11 @@ impl RIBClient {
             if exists == 0 {
                 let new_topic_meta = TopicMeta {pub_count: 1, sub_count: 0};
                 
+                let record = serde_json::to_string(&TopicRecord {ip_address: self.ip_address.clone(), node_type: 1}).expect("TopicRecord serialization failed");
+                
                 let _ : Option<()> = pipe
                     .set(key, serde_json::to_string(&new_topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/pub/1", key), "Placeholder").ignore() // todo Jiachen: 1. use proper serializable value record; 2. use real ip address
+                    .set(format!("{}/pub/1", key), record).ignore() 
                     .query(con)?;
 
                 Ok(Some(HashMap::new()))
@@ -99,23 +101,26 @@ impl RIBClient {
                 let topic_meta_str: String = con.get(key)?;
                 let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
                 topic_meta.pub_count += 1;
-                let sub_node_keys = &(1..=topic_meta.sub_count).map(&|i| format!("{}/sub/{}", key, i)).collect::<Vec<String>>(); 
+                let sub_node_keys =  (1..=topic_meta.sub_count).map(&|i| format!("{}/sub/{}", key, i)).collect::<Vec<String>>();
+
+                let record = serde_json::to_string(&TopicRecord {ip_address: self.ip_address.clone(), node_type: 1}).expect("TopicRecord serialization failed"); 
+                
                 if topic_meta.sub_count == 0 {
                     let _ : Option<()> = pipe
                         .set(key, serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed")).ignore()
-                        .set(format!("{}/pub/{}", key, topic_meta.pub_count), "Placeholder").ignore() // todo Jiachen: 1. use proper serializable value record; 2. use real ip address 
+                        .set(format!("{}/pub/{}", key, topic_meta.pub_count), record).ignore()
                         .query(con)?;
                     
                     Ok(Some(HashMap::new()))
                 } else {
                     pipe
                     .set(key, serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/pub/{}", key, topic_meta.pub_count), "Placeholder").ignore() // todo Jiachen: 1. use proper serializable value record; 2. use real ip address 
-                    .mget(sub_node_keys)
+                    .set(format!("{}/pub/{}", key, topic_meta.pub_count), record).ignore() 
+                    .mget(&sub_node_keys)
                     .query(con)
                     .map(|option: Option<Vec<Vec<String>>>| 
-                        option.map(|outer_vec| outer_vec[0].iter()
-                        .zip(sub_node_keys.iter()).map(|(value, key)| (key.clone(), value.clone())).collect::<HashMap<String, String>>()
+                        option.map(|mut outer_vec| outer_vec.pop().unwrap().into_iter()
+                        .zip((sub_node_keys).into_iter()).map(|(value, key)| (key, value)).collect::<HashMap<String, String>>()
                     )
                 )
             }
@@ -123,21 +128,26 @@ impl RIBClient {
         })?;
 
         println!("{:?}", result);
-        Ok(())
+        Ok(result)
     }
 
     pub fn create_sub_node(&mut self, topic_name: &str) -> redis::RedisResult<()> {
+        // keys will be watched for the transaction
+        // if corresponding values changed, transaction will be aborted
+        // and retry in a loop until it succeed
         let key = topic_name;
 
-       let (_result,) : (Option<()>, ) = redis::transaction(&mut self.con, &[key], |con, pipe| {
+        let _result : () = redis::transaction(&mut self.con, &[key], |con, pipe| {
             let exists: i32 = con.exists(key)?;
 
+            let record = serde_json::to_string(&TopicRecord {ip_address: self.ip_address.clone(), node_type: 0}).expect("TopicRecord serialization failed");
+            
             if exists == 0 {
                 let new_topic_meta = TopicMeta {pub_count: 0, sub_count: 1};
                 
                 pipe
                     .set(key, serde_json::to_string(&new_topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/sub/1", key), "Placeholder").ignore() // todo Jiachen: 1. use proper serializable value record; 2. use real ip address
+                    .set(format!("{}/sub/1", key), record).ignore()
                     .query(con)
             } else {
                 let topic_meta_str: String = con.get(key)?;
@@ -145,7 +155,7 @@ impl RIBClient {
                 topic_meta.sub_count += 1;
                 pipe
                     .set(key, serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/sub/{}", key, topic_meta.sub_count), "Placeholder").ignore() // todo Jiachen: 1. use proper serializable value record; 2. use real ip address 
+                    .set(format!("{}/sub/{}", key, topic_meta.sub_count), record).ignore() 
                     .query(con)
             }
         })?;
@@ -164,16 +174,24 @@ mod tests {
     // 
     fn config_setup() {
         AppConfig::init(Some("")).unwrap();
-        AppConfig::set("ip_address", "0.0.0.0").expect("Config attribute cannot be set");
+        AppConfig::set("ip_address", "128.32.37.82").expect("Config attribute cannot be set");
     }
 
 
     #[test]
-    fn publish_a_topic() {
+    fn create_a_pub_node() {
         config_setup();
         let mut client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
         client.create_pub_node("helloworld").unwrap();
     }
+
+    #[test]
+    fn create_a_sub_node() {
+        config_setup();
+        let mut client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
+        client.create_sub_node("GDPName([2, 2, 2, 2])").unwrap();
+    }
+
 
     #[test]
     fn create_pub_nodes_multi_threads() {

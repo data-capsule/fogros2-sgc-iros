@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::fmt;
+use std::{fmt, net::Ipv4Addr};
 use strum_macros::EnumIter;
 pub const MAGIC_NUMBERS: u16 = u16::from_be_bytes([0x26, 0x2a]);
 
@@ -14,6 +14,8 @@ pub enum GdpAction {
     RibReply = 4,
     Nack = 5,
     Control = 6,
+    PubAdvertise = 7,
+    SubAdvertise = 8,
 }
 
 impl Default for GdpAction {
@@ -33,6 +35,8 @@ impl TryFrom<u8> for GdpAction {
             x if x == GdpAction::Forward as u8 => Ok(GdpAction::Forward),
             x if x == GdpAction::Nack as u8 => Ok(GdpAction::Nack),
             x if x == GdpAction::Control as u8 => Ok(GdpAction::Control),
+            x if x == GdpAction::PubAdvertise as u8 => Ok(GdpAction::PubAdvertise),
+            x if x == GdpAction::SubAdvertise as u8 => Ok(GdpAction::SubAdvertise),
             unknown => Err(anyhow!("Unknown action byte ({:?})", unknown)),
         }
     }
@@ -128,3 +132,47 @@ pub struct GDPChannel {
     pub gdpname: GDPName,
     pub channel: Sender<GDPPacket>,
 }
+
+
+pub struct PubPacket {
+    pub creator: GDPName,
+    pub topic_name: GDPName,
+}
+
+impl PubPacket {
+    pub fn from_vec_bytes(buffer: &Vec<u8>) -> PubPacket {
+        let received_str: Vec<&str> = std::str::from_utf8(&buffer)
+            .unwrap()
+            .trim()
+            .split(",")
+            .collect();
+        
+        // assert_eq!(buffer.len(), 3, "The buffer does not cannot be deserialized to a PubPacket");
+
+        let creator = match &received_str[1][0..1] {
+            "1" => GDPName([1, 1, 1, 1]),
+            "2" => GDPName([2, 2, 2, 2]),
+            "3" => GDPName([3, 3, 3, 3]),
+            "4" => GDPName([4, 4, 4, 4]),
+            "5" => GDPName([5, 5, 5, 5]),
+            _ => GDPName([0, 0, 0, 0]),
+        };
+
+        let topic_name = match &received_str[2][0..1] {
+            "1" => GDPName([1, 1, 1, 1]),
+            "2" => GDPName([2, 2, 2, 2]),
+            "3" => GDPName([3, 3, 3, 3]),
+            "4" => GDPName([4, 4, 4, 4]),
+            "5" => GDPName([5, 5, 5, 5]),
+            _ => GDPName([0, 0, 0, 0]),
+        };
+
+        PubPacket {
+            creator,
+            topic_name
+        }
+    }
+}
+
+
+pub type SubscriberInfo = (GDPName, Ipv4Addr);
