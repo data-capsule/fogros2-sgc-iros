@@ -24,9 +24,11 @@ pub async fn connection_router(
     // will use FutureUnordered Instead
     let _receive_handle = tokio::spawn(async move {
         // map Host GDPName to Sending Channel
-        let mut coonection_rib_table: MultiMap<GDPName, Sender<GDPPacket>> = MultiMap::new();
+        let mut connection_rib_table: MultiMap<GDPName, Sender<GDPPacket>> = MultiMap::new();
         // map Topic GDPName to Host GDPName
-        let mut pub_nodes_creators: HashMap<GDPName, GDPName> = HashMap::new();
+        let mut pub_nodes_creators: MultiMap<GDPName, GDPName> = MultiMap::new();
+        // map Topic GDPName to Host GDPName
+        let mut sub_nodes_creators: MultiMap<GDPName, GDPName> = MultiMap::new();
         // map Topic GDPName to SubscriberInfo
         let mut sub_nodes_info: HashMap<GDPName, HashMap<String, Ipv4Addr>> = HashMap::new();
         // RIBClient abstraction, all RIB interaction should use this object 
@@ -78,17 +80,22 @@ pub async fn connection_router(
                             tokio::spawn(async move {
                                 let mut socket_addr = ip.to_string();
                                 // Connect to the target router using TCP
-                                socket_addr.push_str(AppConfig::get("tcp_port").expect("No attribute tcp_port in config file"));
+                                let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
+                                socket_addr.push_str(&format!(":{}", tcp_port));
                                 setup_tcp_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                                 // !(not working right now) Uncomment to connect to the target router using DTLS
                                 // socket_addr.push_str(":9232");
                                 // setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                             });
                         }
+
                     } else if pkt.action == GdpAction::SubAdvertise {
                         let sub_packet = SubPacket::from_vec_bytes(&pkt.payload.as_ref().expect("Packet payload is empty"));
-                        let result = rib_client.create_sub_node(&format!("{}", sub_packet.topic_name));
+                        sub_nodes_creators.insert(sub_packet.topic_name, sub_packet.creator);
 
+                        // publish the sub node to the remote RIB
+                        let result = rib_client.create_sub_node(&format!("{}", sub_packet.topic_name));
+                        
                         match result {
                             Err(_) => {
                                 warn!("Failed to create a sub node in the remote RIB");
@@ -96,14 +103,11 @@ pub async fn connection_router(
                             Ok(_) => {
                                 info!("A sub node has been created in the remote RIB");
                             }
-                        }
-                    
+                        }  
 
-                    
-                        
                     } else {
                         // find where to route
-                        match coonection_rib_table.get_vec(&pkt.gdpname) {
+                        match connection_rib_table.get_vec(&pkt.gdpname) {
                             Some(routing_dsts) => {
                                 for routing_dst in routing_dsts {
                                     debug!("fwd!");
@@ -113,13 +117,31 @@ pub async fn connection_router(
                                 
                             }
                             None => {
-                                info!("{:} is not there, broadcasting...", pkt.gdpname);
-                                for (_key, value) in coonection_rib_table.iter_all() {
-                                    for dst in value {
-                                        dst.send(pkt.clone()).await.expect("RIB: remote connection closed");
-
-                                    }
+                                match sub_nodes_creators.get_vec(&pkt.gdpname) {
+                                    Some(creators) => {
+                                        // entering this match branch means the gdpname might be a topic gdpname instead of a host gdpname directly
+                                        for creator in creators {
+                                            for routing_dsts in connection_rib_table.get_vec(creator) {
+                                                for routing_dst in routing_dsts {
+                                                    debug!("fwd!");
+                                                    let pkt = pkt.clone();
+                                                    routing_dst.send(pkt).await.expect("RIB: remote connection closed");
+                                                }
+                                            }
+                                        }
+                                        
+                                    },
+                                    None => {
+                                        warn!("{:?} is neither a host name nor a topic name, ignoring...", pkt.gdpname);
+                                    },
                                 }
+                                // info!("{:} is not there, broadcasting...", pkt.gdpname);
+                                // for (_key, value) in connection_rib_table.iter_all() {
+                                //     for dst in value {
+                                //         dst.send(pkt.clone()).await.expect("RIB: remote connection closed");
+
+                                //     }
+                                // }
                                 
                             }
                         }
@@ -129,7 +151,7 @@ pub async fn connection_router(
                 // connection rib advertisement received
                 Some(channel) = channel_rx.recv() => {
                     info!("channel registry received {:}", channel.gdpname);
-                    coonection_rib_table.insert(
+                    connection_rib_table.insert(
                         channel.gdpname,
                         channel.channel
                     );
