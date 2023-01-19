@@ -239,9 +239,15 @@ impl SubscriberInfo {
         self.0 = num; 
     }
 
-    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) {
+    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) -> Vec<Ipv4Addr>{
+        let mut ret = Vec::new();
         for ip in vec {
-            self.1.insert(ip.to_owned());
+            let ip_cloned = ip.to_owned();
+            if !self.1.contains(&ip_cloned) {
+                ret.push(ip_cloned);
+            }
+            self.1.insert(ip_cloned);
         }
+        ret
     }
 }

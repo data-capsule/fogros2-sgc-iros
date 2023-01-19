@@ -190,14 +190,32 @@ pub async fn connection_router(
                 Some(sub_info_update) = sub_update_rx.recv() => {
                     // insert only unique ip into sub_nodes_info and update states such as this topic's number of sub nodes
                     let (gdpname, ip_vec) = sub_info_update;
-                    let mut guard = sub_nodes_info.write().await;
-                    let subscriber_info = guard.get_mut(&gdpname).unwrap();
-                    let num_new_nodes = ip_vec.len() as u64;
-                    subscriber_info.insert_and_keep_unique_ip_vec(&ip_vec);
-                    let curr_node_count = subscriber_info.get_num_sub_nodes();
-                    subscriber_info.set_num_sub_nodes(curr_node_count + num_new_nodes);
+                    if ip_vec.len() > 0 {
+                        let mut guard = sub_nodes_info.write().await;
+                        let subscriber_info = guard.get_mut(&gdpname).unwrap();
+                        let num_new_nodes = ip_vec.len() as u64;
+                        let unique_ips = subscriber_info.insert_and_keep_unique_ip_vec(&ip_vec);
+                        let curr_node_count = subscriber_info.get_num_sub_nodes();
+                        subscriber_info.set_num_sub_nodes(curr_node_count + num_new_nodes);
+                        println!("{:?} has {} sub nodes remotely", gdpname, curr_node_count + num_new_nodes );
+                        // todo: establish connection to those destination
+                        for ip in unique_ips {
+                            let rib_tx_cloned = rib_tx.clone();
+                            let channel_tx_cloned = channel_tx.clone();
+                            let mut socket_addr = ip.to_string();
+                            tokio::spawn(async move {
+                                // Connect to the target router using TCP
+                                let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
+                                socket_addr.push_str(&format!(":{}", tcp_port));
+                                setup_tcp_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                // !(not working right now) Uncomment to connect to the target router using DTLS
+                                // socket_addr.push_str(":9232");
+                                // setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                            });
+                        }
+                    }
 
-                    println!("{:?} has {} sub nodes remotely", gdpname, curr_node_count + num_new_nodes );
+                    
                 }
 
 
