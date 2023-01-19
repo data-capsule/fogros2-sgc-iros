@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::{fmt, net::Ipv4Addr};
+use std::{fmt, net::Ipv4Addr, collections::HashSet};
 use strum_macros::EnumIter;
 pub const MAGIC_NUMBERS: u16 = u16::from_be_bytes([0x26, 0x2a]);
 
@@ -216,4 +216,32 @@ impl SubPacket {
 
 
 
-pub type SubscriberInfo = (GDPName, Ipv4Addr);
+pub struct SubscriberInfo(pub u64, pub HashSet<Ipv4Addr>);
+
+impl SubscriberInfo {
+    pub fn new() -> Self {
+        SubscriberInfo(0, HashSet::new())
+    }
+
+    pub fn get_num_sub_nodes(&self) -> u64 {
+        self.0
+    }
+
+    pub fn incr_num_sub_nodes(&mut self) {
+        self.0 += 1
+    }
+
+    pub fn get_sub_nodes_ip(&mut self) -> &mut HashSet<Ipv4Addr> {
+        &mut self.1
+    }
+
+    pub fn set_num_sub_nodes(&mut self, num: u64) {
+        self.0 = num; 
+    }
+
+    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) {
+        for ip in vec {
+            self.1.insert(ip.to_owned());
+        }
+    }
+}

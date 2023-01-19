@@ -57,7 +57,7 @@ struct TopicMeta {
     //   whether this topic is currently used by someone
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct TopicRecord {
     pub ip_address: String,
     pub node_type: u8, // 0 represents sub node, 1 represents pub node
@@ -127,10 +127,41 @@ impl RIBClient {
             }
         })?;
 
-        println!("{:?}", result);
+        
         Ok(result)
     }
 
+
+    pub fn fetch_new_sub_node_records(&mut self, topic_name: &str, current_sub_count: u64) -> redis::RedisResult<Vec<TopicRecord>> {
+        // keys will be watched for the transaction
+        // if corresponding values changed, transaction will be aborted
+        // and retry in a loop until it succeed
+        let key = topic_name;
+        let result : Vec<String> = redis::transaction(&mut self.con, &[key], |con, pipe| {
+            let topic_meta_str: String = con.get(key)?;
+            let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
+            let sub_node_keys =  (current_sub_count+1..=topic_meta.sub_count).map(&|i| format!("{}/sub/{}", key, i)).collect::<Vec<String>>();
+            if sub_node_keys.len() <= 0 {
+                Ok(Some(Vec::new()))
+            } else {
+                pipe
+                    .mget(&sub_node_keys)
+                    .query(con)
+                    .map(|option: Option<Vec<Vec<String>>>| 
+                        option.map(|mut outer_vec| outer_vec.pop().unwrap().into_iter()
+                        .collect::<Vec<String>>())
+                    )
+            }
+        })?;
+
+        let result: Vec<TopicRecord> = result
+            .into_iter()
+            .map(|element| serde_json::from_str::<TopicRecord>(&element).expect("TopicRecord deserialization failed"))
+            .collect();
+        Ok(result)
+    }
+
+    
     pub fn create_sub_node(&mut self, topic_name: &str) -> redis::RedisResult<()> {
         // keys will be watched for the transaction
         // if corresponding values changed, transaction will be aborted
@@ -161,9 +192,13 @@ impl RIBClient {
         })?;
         Ok(()) 
     }
+
+    
 }
 
 
+// The following tests are *not* unit tests. In order to see the effect of calling these functions, we need to
+// go to the RIB and manually check the result for now.
 mod tests {
     use super::*;
 
@@ -189,7 +224,7 @@ mod tests {
     fn create_a_sub_node() {
         config_setup();
         let mut client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
-        client.create_sub_node("GDPName([2, 2, 2, 2])").unwrap();
+        client.create_sub_node("helloworld").unwrap();
     }
 
 
@@ -233,6 +268,14 @@ mod tests {
         } 
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_new_sub_node_info() {
+        config_setup();
+        let mut client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
+        let vec = client.fetch_new_sub_node_records("helloworld", 1).unwrap();
+        dbg!(vec);
     }
 
     #[test]
