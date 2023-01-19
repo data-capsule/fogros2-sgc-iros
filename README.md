@@ -8,6 +8,7 @@
   - [(Optional) Install grpcurl](#optional-install-grpcurl)
 - [Testcases](#testcases)
   - [grpc](#grpc)
+  - [multiple pub/sub nodes](#multiple-pubsub-nodes)
 - [TODOs](#todos)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
