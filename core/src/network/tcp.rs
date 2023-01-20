@@ -67,7 +67,7 @@ async fn handle_tcp_stream(
 
                 let deserialized:GDPPacketInTransit = serde_json::from_str(std::str::from_utf8(&buf[..buffer_size]).unwrap()).unwrap();
                 if (deserialized.action == GdpAction::Forward) {
-                    let packet = construct_gdp_forward_from_bytes(deserialized.destination, thread_name, deserialized.payload.unwrap());
+                    let packet = construct_gdp_forward_from_bytes(deserialized.destination, thread_name, deserialized.payload);
                     proc_gdp_packet(packet,  // packet
                         rib_tx,  //used to send packet to rib
                         channel_tx, // used to send GDPChannel to rib
@@ -94,11 +94,15 @@ async fn handle_tcp_stream(
                 stream.writable().await.expect("TCP stream is closed");
 
                 info!("TCP packet to forward: {:?}", pkt_to_forward);
-                let payload = pkt_to_forward.get_serialized();
+                let payload = match pkt_to_forward.payload {
+                    Some(payload) => {payload},  //;
+                    _ => {pkt_to_forward.get_serialized().into()}
+                };
+                // let payload = pkt_to_forward.get_serialized();
                 // Convert the Point to a JSON string.
                 // Try to write data, this may still fail with `WouldBlock`
                 // if the readiness event is a false positive.
-                match stream.try_write(payload.as_bytes()) {
+                match stream.try_write(payload.as_ref()) {
                     Ok(n) => {
                         println!("write {} bytes", n);
                     }

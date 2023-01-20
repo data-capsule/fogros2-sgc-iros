@@ -13,7 +13,7 @@ use crate::gdp_proto::globaldataplane_client::GlobaldataplaneClient;
 use crate::gdp_proto::globaldataplane_server::{Globaldataplane, GlobaldataplaneServer};
 use crate::gdp_proto::{GdpPacket, GdpResponse, GdpUpdate};
 use crate::network::grpc::GDPService;
-
+use crate::network::ros::ros_subscriber_image;
 #[cfg(feature = "ros")]
 use crate::network::ros::{ros_subscriber, ros_sample, ros_publisher};
 // const TCP_ADDR: &'static str = "127.0.0.1:9997";
@@ -92,7 +92,7 @@ async fn router_async_loop() {
         let ros_handle = match ros_config.local.as_str() {
             "pub" => {
                 tokio::spawn(
-                    ros_subscriber(
+                    ros_subscriber_image(
                         rib_tx.clone(), channel_tx.clone(), 
                         ros_config.node_name, 
                         ros_config.topic_name, 

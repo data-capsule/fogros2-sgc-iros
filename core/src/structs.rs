@@ -5,6 +5,8 @@ pub const MAGIC_NUMBERS: u16 = u16::from_be_bytes([0x26, 0x2a]);
 
 pub type GdpName = [u8; 32];
 use serde::{Serialize, Deserialize};
+extern crate serde_bytes;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash, EnumIter)]
 pub enum GdpAction {
     Noop = 0,
@@ -70,7 +72,7 @@ pub(crate) trait Packet {
     /// get serialized byte array of the packet
     fn get_byte_payload(&self) -> Option<&Vec<u8>>;
 
-    fn get_serialized(&self) -> String;
+    fn get_serialized(&self) -> Vec<u8>;
 }
 
 
@@ -91,7 +93,9 @@ pub struct GDPPacket {
 pub struct GDPPacketInTransit {
     pub action: GdpAction,
     pub destination: GDPName,
-    pub payload: Option<Vec<u8>>,
+    pub has_payload: bool,
+    #[serde(with = "serde_bytes")]
+    pub payload: Vec<u8>,
 }
 
 impl Packet for GDPPacket {
@@ -107,13 +111,22 @@ impl Packet for GDPPacket {
             None => None, //TODO
         }
     }
-    fn get_serialized(&self) -> String {
-        let transit_packet = GDPPacketInTransit{
-            action : self.action,
-            destination: self.gdpname,
-            payload: self.payload.clone(), 
-        }; 
-        serde_json::to_string(&transit_packet).unwrap()
+    fn get_serialized(&self) -> Vec<u8> {
+        let transit_packet = match &self.payload {
+            Some(payload) => GDPPacketInTransit{
+                action : self.action,
+                destination: self.gdpname,
+                has_payload: true,
+                payload: self.payload.clone().unwrap(), 
+            }, 
+            _ => GDPPacketInTransit{
+                action : self.action,
+                destination: self.gdpname,
+                has_payload: false,
+                payload: vec![], 
+            }
+        };
+        serde_json::to_vec(&transit_packet).unwrap()
     }
 }
 
@@ -125,13 +138,15 @@ impl fmt::Display for GDPPacket {
         // operation succeeded or failed. Note that `write!` uses syntax which
         // is very similar to `println!`.
         if let Some(payload) = &self.payload {
+            let ret = match std::str::from_utf8(&payload) {
+                Ok(payload) => payload.trim_matches(char::from(0)),
+                Err(_) => "unable to render",
+            };
             write!(
                 f,
                 "{:?}: {:?}",
                 self.gdpname,
-                std::str::from_utf8(&payload)
-                    .expect("parsing failure")
-                    .trim_matches(char::from(0))
+                ret
             )
         } else if let Some(payload) = &self.proto {
             write!(f, "{:?}: {:?}", self.gdpname, payload)
