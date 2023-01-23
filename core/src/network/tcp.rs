@@ -12,7 +12,7 @@ use serde::{Serialize, Deserialize};
 use crate::structs::GDPPacketInTransit;
 use crate::pipeline::construct_gdp_forward_from_bytes;
 use rand::Rng;
-
+use serde_bytes::ByteBuf;
 fn generate_random_gdp_name_for_thread() -> GDPName{
     // u8:4
     GDPName([
@@ -93,16 +93,28 @@ async fn handle_tcp_stream(
                 // okay this may have deadlock
                 stream.writable().await.expect("TCP stream is closed");
 
-                info!("TCP packet to forward: {:?}", pkt_to_forward);
-                let payload = match pkt_to_forward.payload {
-                    Some(payload) => {payload},  //;
-                    _ => {pkt_to_forward.get_serialized().into()}
-                };
-                // let payload = pkt_to_forward.get_serialized();
+                // info!("TCP packet to forward: {:?}", pkt_to_forward);
+                // let payload = match pkt_to_forward.payload {
+                //     Some(payload) => {payload},  //;
+                //     _ => {pkt_to_forward.get_serialized().into()}
+                // };
+                
+
+                
+                let payload = pkt_to_forward.to_transit();
+                let serialized = serde_json::to_string(&payload).unwrap();
+                info!("serialized{:?}", serialized.len());
+
+                let s = serde_bytes::ByteBuf::from(payload.payload);
+                
+
+                // // Deserialize
+                // let deserialized: GDPPacketInTransit = serde_json::from_str(&serialized).unwrap();
+                            
                 // Convert the Point to a JSON string.
                 // Try to write data, this may still fail with `WouldBlock`
                 // if the readiness event is a false positive.
-                match stream.try_write(payload.as_ref()) {
+                match stream.try_write(serialized.as_ref()) {
                     Ok(n) => {
                         println!("write {} bytes", n);
                     }
