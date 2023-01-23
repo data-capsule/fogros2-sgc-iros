@@ -72,7 +72,7 @@ pub(crate) trait Packet {
     /// get serialized byte array of the packet
     fn get_byte_payload(&self) -> Option<&Vec<u8>>;
 
-    fn get_serialized(&self) -> Vec<u8>;
+    fn to_transit(&self) -> GDPPacketInTransit;
 }
 
 
@@ -111,7 +111,7 @@ impl Packet for GDPPacket {
             None => None, //TODO
         }
     }
-    fn get_serialized(&self) -> Vec<u8> {
+    fn to_transit(&self) -> GDPPacketInTransit {
         let transit_packet = match &self.payload {
             Some(payload) => GDPPacketInTransit{
                 action : self.action,
@@ -126,7 +126,8 @@ impl Packet for GDPPacket {
                 payload: vec![], 
             }
         };
-        serde_json::to_vec(&transit_packet).unwrap()
+        //serde_json::to_vec(&transit_packet).unwrap()
+        transit_packet
     }
 }
 
