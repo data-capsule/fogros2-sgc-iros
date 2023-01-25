@@ -2,13 +2,15 @@ use crate::gdp_proto::GdpUpdate;
 use crate::network::dtls::setup_dtls_connection_to;
 use crate::network::tcp::setup_tcp_connection_to;
 use crate::rib::{RIBClient, TopicRecord};
-use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction, PubPacket, SubPacket, SubscriberInfo};
+use crate::structs::{
+    GDPChannel, GDPName, GDPPacket, GdpAction, PubPacket, SubPacket, SubscriberInfo,
+};
+use multimap::MultiMap;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
-use multimap::MultiMap;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 use utils::app_config::AppConfig;
 
@@ -21,7 +23,8 @@ use utils::app_config::AppConfig;
 /// forward the packet to corresponding send_tx
 pub async fn connection_router(
     mut rib_rx: Receiver<GDPPacket>, mut stat_rs: Receiver<GdpUpdate>,
-    mut channel_rx: Receiver<GDPChannel>, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>
+    mut channel_rx: Receiver<GDPChannel>, rib_tx: Sender<GDPPacket>,
+    channel_tx: Sender<GDPChannel>,
 ) {
     // TODO: currently, we only take one rx due to select! limitation
     // will use FutureUnordered Instead
@@ -31,12 +34,15 @@ pub async fn connection_router(
         // map Topic GDPName to Host GDPName
         let mut sub_nodes_creators: MultiMap<GDPName, GDPName> = MultiMap::new();
         // map Topic GDPName to SubscriberInfo
-        let sub_nodes_info: Arc<RwLock<HashMap<GDPName, SubscriberInfo>>> = Arc::new(RwLock::new(HashMap::new()));
-        // RIBClient abstraction, all RIB interaction should use this object 
+        let sub_nodes_info: Arc<RwLock<HashMap<GDPName, SubscriberInfo>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        // RIBClient abstraction, all RIB interaction should use this object
         // todo Jiachen: move password to a secure config file
-        let rib_client = Arc::new(Mutex::new(RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap()));
+        let rib_client = Arc::new(Mutex::new(
+            RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap(),
+        ));
 
-        let (sub_update_tx, mut sub_update_rx) = mpsc::channel::<(GDPName, Vec<Ipv4Addr>)>(100); 
+        let (sub_update_tx, mut sub_update_rx) = mpsc::channel::<(GDPName, Vec<Ipv4Addr>)>(100);
 
         // loop polling from
         loop {
@@ -50,10 +56,10 @@ pub async fn connection_router(
                     // todo Jiachen: Maybe we should consider splitting the data and control pipeline for better readability
                     if pkt.action == GdpAction::PubAdvertise {
                         let pub_packet = PubPacket::from_vec_bytes(&pkt.payload.as_ref().expect("Packet payload is empty"));
-                        
+
                         // publish the pub node to the remote RIB
                         let result = rib_client.lock().await.create_pub_node(&format!("{}", pub_packet.topic_name));
-                        
+
                         match result {
                             Err(_) => {
                                 warn!("Failed to create a pub node in the remote RIB");
@@ -109,7 +115,7 @@ pub async fn connection_router(
                                         sub_update_tx_cloned.send(msg).await.expect("sub_update channal closed!");
                                     }
                                 }
-                                
+
                             }
 
                         });
@@ -120,7 +126,7 @@ pub async fn connection_router(
 
                         // publish the sub node to the remote RIB
                         let result = rib_client.lock().await.create_sub_node(&format!("{}", sub_packet.topic_name));
-                        
+
                         match result {
                             Err(_) => {
                                 warn!("Failed to create a sub node in the remote RIB");
@@ -128,7 +134,7 @@ pub async fn connection_router(
                             Ok(_) => {
                                 info!("A sub node has been created in the remote RIB");
                             }
-                        }  
+                        }
 
                     } else {
                         // find where to route
@@ -139,7 +145,7 @@ pub async fn connection_router(
                                     let pkt = pkt.clone();
                                     routing_dst.send(pkt).await.expect("RIB: remote connection closed");
                                 }
-                                
+
                             }
                             None => {
                                 match sub_nodes_creators.get_vec(&pkt.gdpname) {
@@ -154,7 +160,7 @@ pub async fn connection_router(
                                                 }
                                             }
                                         }
-                                        
+
                                     },
                                     None => {
                                         warn!("{:?} is neither a host name nor a topic name, ignoring...", pkt.gdpname);
@@ -167,7 +173,7 @@ pub async fn connection_router(
 
                                 //     }
                                 // }
-                                
+
                             }
                         }
                     }
@@ -215,7 +221,7 @@ pub async fn connection_router(
                         }
                     }
 
-                    
+
                 }
 
 

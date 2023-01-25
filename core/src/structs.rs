@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::{fmt, net::Ipv4Addr, collections::HashSet};
+use std::{collections::HashSet, fmt, net::Ipv4Addr};
 use strum_macros::EnumIter;
 pub const MAGIC_NUMBERS: u16 = u16::from_be_bytes([0x26, 0x2a]);
 
@@ -133,7 +133,6 @@ pub struct GDPChannel {
     pub channel: Sender<GDPPacket>,
 }
 
-
 pub struct PubPacket {
     pub creator: GDPName,
     pub topic_name: GDPName,
@@ -146,7 +145,7 @@ impl PubPacket {
             .trim()
             .split(",")
             .collect();
-        
+
         // assert_eq!(buffer.len(), 3, "The buffer does not cannot be deserialized to a PubPacket");
 
         let creator = match &received_str[1][0..1] {
@@ -169,7 +168,7 @@ impl PubPacket {
 
         PubPacket {
             creator,
-            topic_name
+            topic_name,
         }
     }
 }
@@ -186,7 +185,7 @@ impl SubPacket {
             .trim()
             .split(",")
             .collect();
-        
+
         // assert_eq!(buffer.len(), 3, "The buffer does not cannot be deserialized to a PubPacket");
 
         let creator = match &received_str[1][0..1] {
@@ -209,12 +208,10 @@ impl SubPacket {
 
         SubPacket {
             creator,
-            topic_name
+            topic_name,
         }
     }
 }
-
-
 
 pub struct SubscriberInfo(pub u64, pub HashSet<Ipv4Addr>);
 
@@ -236,10 +233,10 @@ impl SubscriberInfo {
     }
 
     pub fn set_num_sub_nodes(&mut self, num: u64) {
-        self.0 = num; 
+        self.0 = num;
     }
 
-    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) -> Vec<Ipv4Addr>{
+    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
         let mut ret = Vec::new();
         for ip in vec {
             let ip_cloned = ip.to_owned();
