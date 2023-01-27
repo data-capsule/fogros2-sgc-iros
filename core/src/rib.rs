@@ -1,12 +1,11 @@
 extern crate multimap;
 use multimap::MultiMap;
-use redis::{Connection, Commands};
+use redis::{Commands, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use utils::app_config::AppConfig;
 use utils::conversion::str_to_ipv4;
-
 
 pub struct RoutingInformationBase {
     pub routing_table: MultiMap<Vec<u8>, Ipv4Addr>,
@@ -42,19 +41,18 @@ impl RoutingInformationBase {
     }
 }
 
-
 pub struct RIBClient {
-    pub con: Connection,   // Connection to the remote RIB
-    pub ip_address: String // Current GDP router's IP 
+    pub con: Connection,    // Connection to the remote RIB
+    pub ip_address: String, // Current GDP router's IP
 }
 
 #[derive(Serialize, Deserialize)]
 struct TopicMeta {
     pub_count: u64, // total number of publisher
     sub_count: u64, // total number of subscriber
-    // todo: more attributes to be added. 
-    // For example, a "status" attribute tells 
-    //   whether this topic is currently used by someone
+                    // todo: more attributes to be added.
+                    // For example, a "status" attribute tells
+                    //   whether this topic is currently used by someone
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -67,151 +65,209 @@ impl RIBClient {
     pub fn new(url: &str) -> redis::RedisResult<RIBClient> {
         let client = redis::Client::open(url)?;
         let con = client.get_connection()?;
-        
-        let ip_address: String = AppConfig::get("ip_address").expect("Failed to load ip_address from config file");
 
-        Ok(RIBClient {
-            con,
-            ip_address
-        })
+        let ip_address: String =
+            AppConfig::get("ip_address").expect("Failed to load ip_address from config file");
+
+        Ok(RIBClient { con, ip_address })
     }
 
-    pub fn create_pub_node(&mut self, topic_name: &str) -> redis::RedisResult<HashMap<String, String>> {
+    pub fn create_pub_node(
+        &mut self, topic_name: &str,
+    ) -> redis::RedisResult<HashMap<String, String>> {
         // keys will be watched for the transaction
         // if corresponding values changed, transaction will be aborted
         // and retry in a loop until it succeed
         let key = topic_name;
-        
-        let result : HashMap<String, String> = redis::transaction(&mut self.con, &[key], |con, pipe| {
-            let exists: i32 = con.exists(key)?;
 
-            if exists == 0 {
-                let new_topic_meta = TopicMeta {pub_count: 1, sub_count: 0};
-                
-                let record = serde_json::to_string(&TopicRecord {ip_address: self.ip_address.clone(), node_type: 1}).expect("TopicRecord serialization failed");
-                
-                let _ : Option<()> = pipe
-                    .set(key, serde_json::to_string(&new_topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/pub/1", key), record).ignore() 
-                    .query(con)?;
+        let result: HashMap<String, String> =
+            redis::transaction(&mut self.con, &[key], |con, pipe| {
+                let exists: i32 = con.exists(key)?;
 
-                Ok(Some(HashMap::new()))
+                if exists == 0 {
+                    let new_topic_meta = TopicMeta {
+                        pub_count: 1,
+                        sub_count: 0,
+                    };
 
-            } else {
-                let topic_meta_str: String = con.get(key)?;
-                let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
-                topic_meta.pub_count += 1;
-                let sub_node_keys =  (1..=topic_meta.sub_count).map(&|i| format!("{}/sub/{}", key, i)).collect::<Vec<String>>();
+                    let record = serde_json::to_string(&TopicRecord {
+                        ip_address: self.ip_address.clone(),
+                        node_type: 1,
+                    })
+                    .expect("TopicRecord serialization failed");
 
-                let record = serde_json::to_string(&TopicRecord {ip_address: self.ip_address.clone(), node_type: 1}).expect("TopicRecord serialization failed"); 
-                
-                if topic_meta.sub_count == 0 {
-                    let _ : Option<()> = pipe
-                        .set(key, serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed")).ignore()
-                        .set(format!("{}/pub/{}", key, topic_meta.pub_count), record).ignore()
+                    let _: Option<()> = pipe
+                        .set(
+                            key,
+                            serde_json::to_string(&new_topic_meta)
+                                .expect("TopicMeta serialization failed"),
+                        )
+                        .ignore()
+                        .set(format!("{}/pub/1", key), record)
+                        .ignore()
                         .query(con)?;
-                    
+
                     Ok(Some(HashMap::new()))
                 } else {
-                    pipe
-                    .set(key, serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/pub/{}", key, topic_meta.pub_count), record).ignore() 
-                    .mget(&sub_node_keys)
-                    .query(con)
-                    .map(|option: Option<Vec<Vec<String>>>| 
-                        option.map(|mut outer_vec| outer_vec.pop().unwrap().into_iter()
-                        .zip((sub_node_keys).into_iter()).map(|(value, key)| (key, value)).collect::<HashMap<String, String>>()
-                    )
-                )
-            }
-            }
-        })?;
+                    let topic_meta_str: String = con.get(key)?;
+                    let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str)
+                        .expect("TopicMeta deserialization failed");
+                    topic_meta.pub_count += 1;
+                    let sub_node_keys = (1..=topic_meta.sub_count)
+                        .map(&|i| format!("{}/sub/{}", key, i))
+                        .collect::<Vec<String>>();
 
-        
+                    let record = serde_json::to_string(&TopicRecord {
+                        ip_address: self.ip_address.clone(),
+                        node_type: 1,
+                    })
+                    .expect("TopicRecord serialization failed");
+
+                    if topic_meta.sub_count == 0 {
+                        let _: Option<()> = pipe
+                            .set(
+                                key,
+                                serde_json::to_string(&topic_meta)
+                                    .expect("TopicMeta serialization failed"),
+                            )
+                            .ignore()
+                            .set(format!("{}/pub/{}", key, topic_meta.pub_count), record)
+                            .ignore()
+                            .query(con)?;
+
+                        Ok(Some(HashMap::new()))
+                    } else {
+                        pipe.set(
+                            key,
+                            serde_json::to_string(&topic_meta)
+                                .expect("TopicMeta serialization failed"),
+                        )
+                        .ignore()
+                        .set(format!("{}/pub/{}", key, topic_meta.pub_count), record)
+                        .ignore()
+                        .mget(&sub_node_keys)
+                        .query(con)
+                        .map(|option: Option<Vec<Vec<String>>>| {
+                            option.map(|mut outer_vec| {
+                                outer_vec
+                                    .pop()
+                                    .unwrap()
+                                    .into_iter()
+                                    .zip((sub_node_keys).into_iter())
+                                    .map(|(value, key)| (key, value))
+                                    .collect::<HashMap<String, String>>()
+                            })
+                        })
+                    }
+                }
+            })?;
+
         Ok(result)
     }
 
-
-    pub fn fetch_new_sub_node_records(&mut self, topic_name: &str, current_sub_count: u64) -> redis::RedisResult<Vec<TopicRecord>> {
+    pub fn fetch_new_sub_node_records(
+        &mut self, topic_name: &str, current_sub_count: u64,
+    ) -> redis::RedisResult<Vec<TopicRecord>> {
         // keys will be watched for the transaction
         // if corresponding values changed, transaction will be aborted
         // and retry in a loop until it succeed
         let key = topic_name;
-        let result : Vec<String> = redis::transaction(&mut self.con, &[key], |con, pipe| {
+        let result: Vec<String> = redis::transaction(&mut self.con, &[key], |con, pipe| {
             let topic_meta_str: String = con.get(key)?;
-            let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
-            let sub_node_keys =  (current_sub_count+1..=topic_meta.sub_count).map(&|i| format!("{}/sub/{}", key, i)).collect::<Vec<String>>();
+            let mut topic_meta: TopicMeta =
+                serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
+            let sub_node_keys = (current_sub_count + 1..=topic_meta.sub_count)
+                .map(&|i| format!("{}/sub/{}", key, i))
+                .collect::<Vec<String>>();
             if sub_node_keys.len() <= 0 {
                 Ok(Some(Vec::new()))
             } else {
-                pipe
-                    .mget(&sub_node_keys)
+                pipe.mget(&sub_node_keys)
                     .query(con)
-                    .map(|option: Option<Vec<Vec<String>>>| 
-                        option.map(|mut outer_vec| outer_vec.pop().unwrap().into_iter()
-                        .collect::<Vec<String>>())
-                    )
+                    .map(|option: Option<Vec<Vec<String>>>| {
+                        option.map(|mut outer_vec| {
+                            outer_vec
+                                .pop()
+                                .unwrap()
+                                .into_iter()
+                                .collect::<Vec<String>>()
+                        })
+                    })
             }
         })?;
 
         let result: Vec<TopicRecord> = result
             .into_iter()
-            .map(|element| serde_json::from_str::<TopicRecord>(&element).expect("TopicRecord deserialization failed"))
+            .map(|element| {
+                serde_json::from_str::<TopicRecord>(&element)
+                    .expect("TopicRecord deserialization failed")
+            })
             .collect();
         Ok(result)
     }
 
-    
     pub fn create_sub_node(&mut self, topic_name: &str) -> redis::RedisResult<()> {
         // keys will be watched for the transaction
         // if corresponding values changed, transaction will be aborted
         // and retry in a loop until it succeed
         let key = topic_name;
 
-        let _result : () = redis::transaction(&mut self.con, &[key], |con, pipe| {
+        let _result: () = redis::transaction(&mut self.con, &[key], |con, pipe| {
             let exists: i32 = con.exists(key)?;
 
-            let record = serde_json::to_string(&TopicRecord {ip_address: self.ip_address.clone(), node_type: 0}).expect("TopicRecord serialization failed");
-            
+            let record = serde_json::to_string(&TopicRecord {
+                ip_address: self.ip_address.clone(),
+                node_type: 0,
+            })
+            .expect("TopicRecord serialization failed");
+
             if exists == 0 {
-                let new_topic_meta = TopicMeta {pub_count: 0, sub_count: 1};
-                
-                pipe
-                    .set(key, serde_json::to_string(&new_topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/sub/1", key), record).ignore()
-                    .query(con)
+                let new_topic_meta = TopicMeta {
+                    pub_count: 0,
+                    sub_count: 1,
+                };
+
+                pipe.set(
+                    key,
+                    serde_json::to_string(&new_topic_meta).expect("TopicMeta serialization failed"),
+                )
+                .ignore()
+                .set(format!("{}/sub/1", key), record)
+                .ignore()
+                .query(con)
             } else {
                 let topic_meta_str: String = con.get(key)?;
-                let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
+                let mut topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str)
+                    .expect("TopicMeta deserialization failed");
                 topic_meta.sub_count += 1;
-                pipe
-                    .set(key, serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed")).ignore()
-                    .set(format!("{}/sub/{}", key, topic_meta.sub_count), record).ignore() 
-                    .query(con)
+                pipe.set(
+                    key,
+                    serde_json::to_string(&topic_meta).expect("TopicMeta serialization failed"),
+                )
+                .ignore()
+                .set(format!("{}/sub/{}", key, topic_meta.sub_count), record)
+                .ignore()
+                .query(con)
             }
         })?;
-        Ok(()) 
+        Ok(())
     }
-
-    
 }
-
 
 // The following tests are *not* unit tests. In order to see the effect of calling these functions, we need to
 // go to the RIB and manually check the result for now.
 mod tests {
     use super::*;
 
-    // Initialize the configuration object. 
+    // Initialize the configuration object.
     // This is because when running test, the main entrance function is not executed,
     // but we need some information from config while running tests.
     // Thus these values are faked here
-    // 
+    //
     fn config_setup() {
         AppConfig::init(Some("")).unwrap();
         AppConfig::set("ip_address", "128.32.37.82").expect("Config attribute cannot be set");
     }
-
 
     #[test]
     fn create_a_pub_node() {
@@ -227,13 +283,12 @@ mod tests {
         client.create_sub_node("helloworld").unwrap();
     }
 
-
     #[test]
     fn create_pub_nodes_multi_threads() {
         config_setup();
         let mut client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
 
-        let mut client_2= RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
+        let mut client_2 = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
         let handle = std::thread::spawn(move || {
             for i in 0..10 {
                 println!("Iteration {} from thread 2", i);
@@ -244,7 +299,7 @@ mod tests {
         for i in 0..10 {
             println!("Iteration {} from thread 1", i);
             client.create_pub_node("helloworld");
-        } 
+        }
 
         handle.join().unwrap();
     }
@@ -254,7 +309,7 @@ mod tests {
         config_setup();
         let mut client = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
 
-        let mut client_2= RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
+        let mut client_2 = RIBClient::new("redis://default:fogrobotics@128.32.37.41/").unwrap();
         let handle = std::thread::spawn(move || {
             for i in 0..10 {
                 println!("Iteration {} from thread 2", i);
@@ -265,7 +320,7 @@ mod tests {
         for i in 0..10 {
             println!("Iteration {} from thread 1", i);
             client.create_sub_node("helloworld");
-        } 
+        }
 
         handle.join().unwrap();
     }
@@ -291,8 +346,10 @@ mod tests {
         let result: () = client.con.set("nihao", "shijie").unwrap();
         dbg!(result);
 
-        let result: Vec<String> = client.con.mget(&["helloworld/sub/1", "helloworld/sub/2"]).unwrap();
+        let result: Vec<String> = client
+            .con
+            .mget(&["helloworld/sub/1", "helloworld/sub/2"])
+            .unwrap();
         dbg!(result);
     }
 }
-

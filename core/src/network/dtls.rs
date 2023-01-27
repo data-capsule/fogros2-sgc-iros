@@ -10,8 +10,8 @@ use openssl::{
 };
 use tokio::net::TcpStream;
 
-use crate::structs::{GDPChannel, GDPPacket, Packet, GDPName};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, split};
+use crate::structs::{GDPChannel, GDPName, GDPPacket, Packet};
+use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, Sender};
 
 const UDP_BUFFER_SIZE: usize = 4096; // 17kb
@@ -91,11 +91,14 @@ pub async fn dtls_listener(
     }
 }
 
-
 // ! bug: this code does not work. It is causing deadlock for some unknown reasons. Using TCP connection instead...
 // Establish a DTLS connection with target router who is subscribing to gdpname
-pub async fn setup_dtls_connection_to(gdpname: GDPName, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>){
-    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap()).await.unwrap();
+pub async fn setup_dtls_connection_to(
+    gdpname: GDPName, address: String, rib_tx: Sender<GDPPacket>, channel_tx: Sender<GDPChannel>,
+) {
+    let stream = UdpStream::connect(SocketAddr::from_str(&address).unwrap())
+        .await
+        .unwrap();
 
     let mut connector_builder = SslConnector::builder(SslMethod::dtls()).unwrap();
     connector_builder.set_verify(SslVerifyMode::NONE);
@@ -104,24 +107,22 @@ pub async fn setup_dtls_connection_to(gdpname: GDPName, address: String, rib_tx:
     let mut stream = tokio_openssl::SslStream::new(ssl, stream).unwrap();
     Pin::new(&mut stream).connect().await.unwrap();
 
-
     // split the stream into read half and write half
     let (mut rd, mut wr) = tokio::io::split(stream);
 
     let (tx, mut rx) = mpsc::channel(32);
 
-
-
     let send_channel = GDPChannel {
-        gdpname: gdpname, 
+        gdpname: gdpname,
         channel: tx.clone(),
     };
 
-
-    channel_tx.send(send_channel).await.expect("channel_tx channel closed!");
+    channel_tx
+        .send(send_channel)
+        .await
+        .expect("channel_tx channel closed!");
 
     loop {
-
         let mut buf = vec![0u8; 64];
 
         tokio::select! {
@@ -138,14 +139,11 @@ pub async fn setup_dtls_connection_to(gdpname: GDPName, address: String, rib_tx:
                     let packet = populate_gdp_struct_from_bytes(buf);
                     proc_gdp_packet(packet, &rib_tx_clone, &channel_tx_clone, &tx_clone).await;
                 });
-               
+
             }
         }
     }
 }
-
-
-
 
 #[tokio::main]
 pub async fn dtls_test_client(addr: String) -> std::io::Result<SslContext> {
