@@ -83,12 +83,12 @@ pub async fn connection_router(
                                 let mut socket_addr = ip.to_string();
                                 tokio::spawn(async move {
                                     // Connect to the target router using TCP
-                                    let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
-                                    socket_addr.push_str(&format!(":{}", tcp_port));
-                                    setup_tcp_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                    // let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
+                                    // socket_addr.push_str(&format!(":{}", tcp_port));
+                                    // setup_tcp_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                                     // !(not working right now) Uncomment to connect to the target router using DTLS
-                                    // socket_addr.push_str(":9232");
-                                    // setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                    socket_addr.push_str(":9232");
+                                    setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                                 });
                             }
                         }
@@ -211,12 +211,12 @@ pub async fn connection_router(
                             let mut socket_addr = ip.to_string();
                             tokio::spawn(async move {
                                 // Connect to the target router using TCP
-                                let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
-                                socket_addr.push_str(&format!(":{}", tcp_port));
-                                setup_tcp_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                // let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
+                                // socket_addr.push_str(&format!(":{}", tcp_port));
+                                // setup_tcp_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                                 // !(not working right now) Uncomment to connect to the target router using DTLS
-                                // socket_addr.push_str(":9232");
-                                // setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                socket_addr.push_str(":9232");
+                                setup_dtls_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                             });
                         }
                     }
