@@ -19,6 +19,7 @@ use tokio::{
     sync::mpsc,
     sync::Mutex as AsyncMutex,
 };
+use utils::app_config::AppConfig;
 
 macro_rules! pin_mut {
     ($($x:ident),*) => { $(
@@ -189,7 +190,8 @@ impl UdpStream {
     #[allow(unused)]
     pub async fn connect(addr: SocketAddr) -> Result<Self, tokio::io::Error> {
         let local_addr: SocketAddr = if addr.is_ipv4() {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0)
+            let ip_address: String = AppConfig::get("ip_address").expect("Failed to load ip_address from config file");
+            SocketAddr::new(IpAddr::V4(ip_address.parse::<Ipv4Addr>().unwrap()), 0)
         } else {
             SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 0)
         };
