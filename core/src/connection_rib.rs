@@ -1,12 +1,11 @@
 use crate::gdp_proto::GdpUpdate;
 use crate::network::dtls::setup_dtls_connection_to;
-use crate::network::tcp::setup_tcp_connection_to;
 use crate::rib::{RIBClient, TopicRecord};
 use crate::structs::{
     GDPChannel, GDPName, GDPPacket, GdpAction, PubPacket, SubPacket, SubscriberInfo,
 };
 use multimap::MultiMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -82,12 +81,9 @@ pub async fn connection_router(
                                 let channel_tx_cloned = channel_tx.clone();
                                 let mut socket_addr = ip.to_string();
                                 tokio::spawn(async move {
-                                    // Connect to the target router using TCP
-                                    // let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
-                                    // socket_addr.push_str(&format!(":{}", tcp_port));
-                                    // setup_tcp_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
-                                    // !(not working right now) Uncomment to connect to the target router using DTLS
-                                    socket_addr.push_str(":9232");
+                                    // Connect to the target router using dTLS
+                                    let dtls_port: String = AppConfig::get("dtls_port").expect("No attribute dtls_port in config file");
+                                    socket_addr.push_str(&format!(":{}", dtls_port));
                                     setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                                 });
                             }
@@ -210,12 +206,9 @@ pub async fn connection_router(
                             let channel_tx_cloned = channel_tx.clone();
                             let mut socket_addr = ip.to_string();
                             tokio::spawn(async move {
-                                // Connect to the target router using TCP
-                                // let tcp_port: String = AppConfig::get("tcp_port").expect("No attribute tcp_port in config file");
-                                // socket_addr.push_str(&format!(":{}", tcp_port));
-                                // setup_tcp_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
-                                // !(not working right now) Uncomment to connect to the target router using DTLS
-                                socket_addr.push_str(":9232");
+                                // Connect to the target router using dTLS
+                                let dtls_port: String = AppConfig::get("dtls_port").expect("No attribute dtls_port in config file");
+                                socket_addr.push_str(&format!(":{}", dtls_port));
                                 setup_dtls_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
                             });
                         }
