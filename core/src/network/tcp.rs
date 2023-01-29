@@ -29,7 +29,7 @@ async fn handle_tcp_stream(
                 // Creating the buffer **after** the `await` prevents it from
                 // being stored in the async task.
 
-                let mut buf = vec![0u8; UDP_BUFFER_SIZE];
+                let mut buf = vec![0u8; 1024];
                 // Try to read data, this may still fail with `WouldBlock`
                 // if the readiness event is a false positive.
                 match stream.try_read(&mut buf) {

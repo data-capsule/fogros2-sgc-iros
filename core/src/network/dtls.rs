@@ -123,7 +123,7 @@ pub async fn setup_dtls_connection_to(
         .expect("channel_tx channel closed!");
 
     loop {
-        let mut buf = vec![0u8; 64];
+        let mut buf = vec![0u8; 1024];
 
         tokio::select! {
             control_message = rx.recv() => {
@@ -131,7 +131,7 @@ pub async fn setup_dtls_connection_to(
                 wr.write_all(&buffer).await.unwrap();
             }
 
-            n = rd.read(&mut buf) => {
+            n = rd.read_exact(&mut buf) => {
                 let rib_tx_clone = rib_tx.clone();
                 let channel_tx_clone = channel_tx.clone();
                 let tx_clone = tx.clone();
