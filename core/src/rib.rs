@@ -72,6 +72,15 @@ impl RIBClient {
         Ok(RIBClient { con, ip_address })
     }
 
+    // Get total number of sub nodes given topic name
+    pub fn get_num_sub_nodes(&mut self, topic_name: &str) -> redis::RedisResult<u64> {
+        let key = topic_name;
+        let topic_meta_str: String = self.con.get(key)?;
+        let topic_meta: TopicMeta = serde_json::from_str(&topic_meta_str).expect("TopicMeta deserialization failed");
+        return Ok(topic_meta.sub_count);
+    }
+
+    // ! big improvement possible: no need to fetch entire sub node ip vec, just need the #. Logic is if the # does not fit our local copy, we then fetch the ip_vec.
     pub fn create_pub_node(
         &mut self, topic_name: &str,
     ) -> redis::RedisResult<HashMap<String, String>> {

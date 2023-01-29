@@ -213,7 +213,9 @@ impl SubPacket {
     }
 }
 
-pub struct SubscriberInfo(pub u64, pub HashSet<Ipv4Addr>);
+pub struct SubscriberInfo(pub u64, // number of sub nodes
+                            pub HashSet<Ipv4Addr>, // unique ip addresses from all sub nodes
+                        );
 
 impl SubscriberInfo {
     pub fn new() -> Self {
@@ -236,15 +238,17 @@ impl SubscriberInfo {
         self.0 = num;
     }
 
-    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) -> Vec<Ipv4Addr> {
+    pub fn insert_and_keep_unique_ip_vec(&mut self, vec: &[Ipv4Addr]) -> (Vec<Ipv4Addr>, bool) {
         let mut ret = Vec::new();
+        let mut more_unique_ip = false;
         for ip in vec {
             let ip_cloned = ip.to_owned();
             if !self.1.contains(&ip_cloned) {
                 ret.push(ip_cloned);
+                more_unique_ip = true;
             }
             self.1.insert(ip_cloned);
         }
-        ret
+        (ret, more_unique_ip)
     }
 }

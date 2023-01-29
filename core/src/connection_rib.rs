@@ -8,6 +8,7 @@ use multimap::MultiMap;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH, Instant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Duration};
@@ -23,7 +24,7 @@ use utils::app_config::AppConfig;
 pub async fn connection_router(
     mut rib_rx: Receiver<GDPPacket>, mut stat_rs: Receiver<GdpUpdate>,
     mut channel_rx: Receiver<GDPChannel>, rib_tx: Sender<GDPPacket>,
-    channel_tx: Sender<GDPChannel>,
+    channel_tx: Sender<GDPChannel>,start_time: Instant
 ) {
     // TODO: currently, we only take one rx due to select! limitation
     // will use FutureUnordered Instead
@@ -43,6 +44,11 @@ pub async fn connection_router(
 
         let (sub_update_tx, mut sub_update_rx) = mpsc::channel::<(GDPName, Vec<Ipv4Addr>)>(100);
 
+        // let start = Instant::now();
+        
+        let duration = start_time.elapsed();
+        warn!("starting the router takes {:?}", duration);
+
         // loop polling from
         loop {
             tokio::select! {
@@ -59,36 +65,50 @@ pub async fn connection_router(
                         // publish the pub node to the remote RIB
                         let result = rib_client.lock().await.create_pub_node(&format!("{}", pub_packet.topic_name));
 
+                        // a signal represents whether there are new sub nodes for this topic
+                        let mut more_unique_ip = false; 
+
                         match result {
                             Err(_) => {
                                 warn!("Failed to create a pub node in the remote RIB");
                             },
                             Ok(kv_map) => {
+
+                                // ! for benchmark purpose
+                                let host_channel = connection_rib_table.get(&pub_packet.creator).unwrap();
+                                let res_packet = GDPPacket { action: GdpAction::Noop, gdpname: GDPName([0,0,0,0]), payload: Some("topic_pub_ack\n".as_bytes().to_vec()), proto: None };
+                                host_channel.send(res_packet).await.unwrap();
+
+
                                 info!("A pub node has been created in the remote RIB");
                                 let mut guard = sub_nodes_info.write().await;
                                 let entry = guard.entry(pub_packet.topic_name).or_insert(SubscriberInfo::new());
                                 for (_key, value) in &kv_map {
                                     let topic_record: TopicRecord = serde_json::from_str(value).expect("TopicRecord deserialization failed");
                                     entry.incr_num_sub_nodes();
-                                    entry.insert_and_keep_unique_ip_vec(&[topic_record.ip_address.parse::<Ipv4Addr>().unwrap()]);
+                                    let (_, unique) =  entry.insert_and_keep_unique_ip_vec(&[topic_record.ip_address.parse::<Ipv4Addr>().unwrap()]);
+                                    more_unique_ip |= unique;
                                 }
                             }
                         }
-
-                        if let Some(SubscriberInfo(_, ref set)) = sub_nodes_info.read().await.get(&pub_packet.topic_name) {
-                            for ip in set {
-                                let rib_tx_cloned = rib_tx.clone();
-                                let channel_tx_cloned = channel_tx.clone();
-                                let mut socket_addr = ip.to_string();
-                                tokio::spawn(async move {
-                                    // Connect to the target router using dTLS
-                                    let dtls_port: String = AppConfig::get("dtls_port").expect("No attribute dtls_port in config file");
-                                    socket_addr.push_str(&format!(":{}", dtls_port));
-                                    setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
-                                });
+                        
+                        // Only initiate new connections when there are new sub nodes. No need to create duplicate connections.
+                        if more_unique_ip {
+                            if let Some(SubscriberInfo(_, ref set)) = sub_nodes_info.read().await.get(&pub_packet.topic_name) {
+                                for ip in set {
+                                    let rib_tx_cloned = rib_tx.clone();
+                                    let channel_tx_cloned = channel_tx.clone();
+                                    let mut socket_addr = ip.to_string();
+                                    tokio::spawn(async move {
+                                        // Connect to the target router using dTLS
+                                        let dtls_port: String = AppConfig::get("dtls_port").expect("No attribute dtls_port in config file");
+                                        socket_addr.push_str(&format!(":{}", dtls_port));
+                                        setup_dtls_connection_to(pub_packet.topic_name, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                    });
+                                }
                             }
                         }
-
+                            
                         // Create a polling task, which is responsible for periodically fetching new subscriber nodes' information
                         let sub_nodes_info_cloned = sub_nodes_info.clone();
                         let rib_client_cloned = rib_client.clone();
@@ -128,6 +148,10 @@ pub async fn connection_router(
                                 warn!("Failed to create a sub node in the remote RIB");
                             },
                             Ok(_) => {
+                                // ! for benchmark purpose
+                                let host_channel = connection_rib_table.get(&sub_packet.creator).unwrap();
+                                let res_packet = GDPPacket { action: GdpAction::Noop, gdpname: GDPName([0,0,0,0]), payload: Some("topic_sub_ack\n".as_bytes().to_vec()), proto: None };
+                                host_channel.send(res_packet).await.unwrap();
                                 info!("A sub node has been created in the remote RIB");
                             }
                         }
@@ -178,10 +202,17 @@ pub async fn connection_router(
                 // connection rib advertisement received
                 Some(channel) = channel_rx.recv() => {
                     info!("channel registry received {:}", channel.gdpname);
+                    
+                    // ! for benchmark purpose, assume the host always use 1,1,1,1 as gdpname in benchmarking
+                    if channel.gdpname == GDPName([1,1,1,1]) {
+                        let res_packet = GDPPacket { action: GdpAction::Noop, gdpname: GDPName([0,0,0,0]), payload: Some("adv_ack\n".as_bytes().to_vec()), proto: None };
+                        channel.channel.send(res_packet).await.unwrap();
+                    }
+
                     connection_rib_table.insert(
                         channel.gdpname,
                         channel.channel
-                    );
+                    );         
                 },
 
                 Some(update) = stat_rs.recv() => {
@@ -196,21 +227,22 @@ pub async fn connection_router(
                         let mut guard = sub_nodes_info.write().await;
                         let subscriber_info = guard.get_mut(&gdpname).unwrap();
                         let num_new_nodes = ip_vec.len() as u64;
-                        let unique_ips = subscriber_info.insert_and_keep_unique_ip_vec(&ip_vec);
+                        let (unique_ips, more_unique_ip) = subscriber_info.insert_and_keep_unique_ip_vec(&ip_vec);
                         let curr_node_count = subscriber_info.get_num_sub_nodes();
                         subscriber_info.set_num_sub_nodes(curr_node_count + num_new_nodes);
                         println!("{:?} has {} sub nodes remotely", gdpname, curr_node_count + num_new_nodes );
-                        // todo: establish connection to those destination
-                        for ip in unique_ips {
-                            let rib_tx_cloned = rib_tx.clone();
-                            let channel_tx_cloned = channel_tx.clone();
-                            let mut socket_addr = ip.to_string();
-                            tokio::spawn(async move {
-                                // Connect to the target router using dTLS
-                                let dtls_port: String = AppConfig::get("dtls_port").expect("No attribute dtls_port in config file");
-                                socket_addr.push_str(&format!(":{}", dtls_port));
-                                setup_dtls_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
-                            });
+                        if more_unique_ip {
+                            for ip in unique_ips {
+                                let rib_tx_cloned = rib_tx.clone();
+                                let channel_tx_cloned = channel_tx.clone();
+                                let mut socket_addr = ip.to_string();
+                                tokio::spawn(async move {
+                                    // Connect to the target router using dTLS
+                                    let dtls_port: String = AppConfig::get("dtls_port").expect("No attribute dtls_port in config file");
+                                    socket_addr.push_str(&format!(":{}", dtls_port));
+                                    setup_dtls_connection_to(gdpname, socket_addr, rib_tx_cloned, channel_tx_cloned).await;
+                                });
+                            }
                         }
                     }
 
@@ -221,4 +253,5 @@ pub async fn connection_router(
             }
         }
     });
+    
 }
