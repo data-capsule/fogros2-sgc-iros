@@ -39,7 +39,10 @@ pub fn populate_gdp_struct_from_bytes(buffer: Vec<u8>) -> GDPPacket {
         "SUB" => GdpAction::SubAdvertise,
         _ => GdpAction::Noop,
     };
+    if received_str.len() == 1{
 
+        println!("{:?}", received_str);
+    }
     let m_gdp_name = match &received_str[1][0..1] {
         "1" => GDPName([1, 1, 1, 1]),
         "2" => GDPName([2, 2, 2, 2]),

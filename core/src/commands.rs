@@ -8,6 +8,7 @@ use tokio::sync::mpsc::{self};
 use tonic::{transport::Server, Request, Response, Status};
 use utils::app_config::AppConfig;
 use utils::error::Result;
+use std::time::Instant;
 
 use crate::gdp_proto::globaldataplane_client::GlobaldataplaneClient;
 use crate::gdp_proto::globaldataplane_server::{Globaldataplane, GlobaldataplaneServer};
@@ -23,7 +24,7 @@ use crate::network::ros::{ros_listener, ros_sample};
 /// inspired by https://stackoverflow.com/questions/71314504/how-do-i-simultaneously-read-messages-from-multiple-tokio-channels-in-a-single-t
 /// TODO: later put to another file
 #[tokio::main]
-async fn router_async_loop() {
+async fn router_async_loop(start_time: Instant) {
     let config = AppConfig::fetch().expect("App config unable to load");
     info!("{:#?}", config);
 
@@ -77,6 +78,7 @@ async fn router_async_loop() {
         channel_rx,         // receive channel information for connection rib
         rib_tx.clone(),     // send packets to forward
         channel_tx.clone(), // send channel information for connection rib
+        start_time
     ));
 
     future::join_all([
@@ -93,11 +95,15 @@ async fn router_async_loop() {
 
 /// Show the configuration file
 pub fn router() -> Result<()> {
-    warn!("router is started!");
-
+    // let start = SystemTime::now();
+    // let since_the_epoch = start
+    //     .duration_since(UNIX_EPOCH)
+    //     .expect("Time went backwards");
+    // warn!("router is started!, timestamp = {:?}", since_the_epoch.as_millis());
+    let start = Instant::now();
     // NOTE: uncomment to use pnet
     // libpnet::pnet_proc_loop();
-    router_async_loop();
+    router_async_loop(start);
 
     Ok(())
 }

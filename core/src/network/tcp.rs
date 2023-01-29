@@ -113,7 +113,7 @@ pub async fn setup_tcp_connection_to(
     // read from target router tcp connection
     let read_handle = tokio::spawn(async move {
         loop {
-            let mut buf = vec![0u8; 64];
+            let mut buf = vec![0u8; UDP_BUFFER_SIZE];
             let n = rd.read(&mut buf).await.unwrap();
 
             // let gdp_packet = populate_gdp_struct_from_bytes(buf);
