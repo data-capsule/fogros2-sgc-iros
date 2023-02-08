@@ -1,10 +1,16 @@
-use crate::{structs::{GDPChannel, GDPName, GDPPacket, GDPStatus}, pipeline::construct_gdp_advertisement_from_bytes};
+use crate::{
+    pipeline::construct_gdp_advertisement_from_bytes,
+    structs::{GDPChannel, GDPName, GDPPacket, GDPStatus},
+};
 use std::collections::HashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 async fn send_to_destination(destinations: Vec<GDPChannel>, packet: GDPPacket) {
     for dst in destinations {
-        info!("data {} from {} send to {}", packet.gdpname, packet.source, dst.advertisement.source);
+        info!(
+            "data {} from {} send to {}",
+            packet.gdpname, packet.source, dst.advertisement.source
+        );
         if dst.advertisement.source == packet.source {
             info!("Equal to the source, skipped!");
             continue;
@@ -20,16 +26,24 @@ async fn send_to_destination(destinations: Vec<GDPChannel>, packet: GDPPacket) {
 }
 
 async fn broadcast_advertisement(
-    channel: &GDPChannel,
-    coonection_rib_table: &HashMap<GDPName, Vec<GDPChannel>>){
-    for dsts in coonection_rib_table.values(){
+    channel: &GDPChannel, coonection_rib_table: &HashMap<GDPName, Vec<GDPChannel>>,
+) {
+    for dsts in coonection_rib_table.values() {
         for dst in dsts {
-            info!("advertisement of {} is sent to channel {}", dst.advertisement.source, channel.advertisement.source);
+            info!(
+                "advertisement of {} is sent to channel {}",
+                dst.advertisement.source, channel.advertisement.source
+            );
             if dst.advertisement.source == channel.advertisement.source {
-                info!("skipping {} is because they come from same source", dst.advertisement.source);
+                info!(
+                    "skipping {} is because they come from same source",
+                    dst.advertisement.source
+                );
                 continue;
             }
-            dst.channel.send(channel.advertisement.clone()).expect("adv channel closed");
+            dst.channel
+                .send(channel.advertisement.clone())
+                .expect("adv channel closed");
         }
     }
 }
@@ -86,7 +100,7 @@ pub async fn connection_router(
                 Some(channel) = channel_rx.recv() => {
                     info!("channel registry received {:}", channel.gdpname);
 
-                    
+
                     info!("broadcasting...");
                     // broadcast_advertisement(&channel, &coonection_rib_table).await;
 
@@ -108,11 +122,11 @@ pub async fn connection_router(
                             );
                         }
                     };
-                    
+
                 },
 
                 Some(update) = stat_rs.recv() => {
-                    // Note: incomplete implementation, only support flushing advertisement 
+                    // Note: incomplete implementation, only support flushing advertisement
                     let dst = update.sink;
                     for (name, _) in &coonection_rib_table {
                         info!("flushing advertisement for {} to {:?}", name, dst);

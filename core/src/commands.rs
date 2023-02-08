@@ -98,12 +98,12 @@ async fn router_async_loop() {
             ));
             future_handles.push(ros_peer);
         } else {
-            // reasoning here: 
-            // m_tx is the next hop that the ros sends messages 
+            // reasoning here:
+            // m_tx is the next hop that the ros sends messages
             // if we don't peer with another router directly
             // we just forward to rib
-            m_tx = rib_tx.clone(); 
-        }   
+            m_tx = rib_tx.clone();
+        }
 
         let ros_handle = match ros_config.local.as_str() {
             "pub" => match ros_config.topic_type.as_str() {
@@ -140,8 +140,6 @@ async fn router_async_loop() {
         future_handles.push(ros_handle);
     }
 
-
-
     if config.peer_with_gateway {
         let (m_tx, m_rx) = mpsc::unbounded_channel();
         let peer_advertisement = tokio::spawn(tcp_to_peer(
@@ -153,13 +151,13 @@ async fn router_async_loop() {
         ));
         future_handles.push(peer_advertisement);
 
-        // only non-gateway proxy needs to advertise themselves 
-        // it needs the connection to be settled first, otherwise the advertisement is lost 
+        // only non-gateway proxy needs to advertise themselves
+        // it needs the connection to be settled first, otherwise the advertisement is lost
         sleep(Duration::from_millis(1000)).await;
         info!("Flushing the RIB....");
-        stat_tx.send(GDPStatus{
-            sink: m_tx,
-        }).expect("Flush the RIB Failure");
+        stat_tx
+            .send(GDPStatus { sink: m_tx })
+            .expect("Flush the RIB Failure");
     }
 
     future::join_all(future_handles).await;
