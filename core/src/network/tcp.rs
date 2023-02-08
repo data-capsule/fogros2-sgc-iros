@@ -169,6 +169,7 @@ async fn handle_tcp_stream(
                             else if read_payload_size == remaining_gdp_header.length { // match the end of the packet
                                 remaining_gdp_payload.append(&mut receiving_buf[..receiving_buf_size].to_vec());
                                 header_payload_pair.push((remaining_gdp_header, remaining_gdp_payload.clone()));
+                                
                                 receiving_buf = vec!();
                             } 
                             else{ //overflow!!
@@ -239,7 +240,7 @@ async fn handle_tcp_stream(
                 // okay this may have deadlock
                 stream.writable().await.expect("TCP stream is closed");
 
-                //info!("TCP packet to forward: {:?}", pkt_to_forward);
+                info!("TCP packet to forward: {:?}", pkt_to_forward);
                 let transit_header = pkt_to_forward.get_header();
                 let mut header_string = serde_json::to_string(&transit_header).unwrap();
                 info!("the final serialized size is {}", header_string.len());

@@ -29,7 +29,7 @@ macro_rules! pin_mut {
     )* }
 }
 
-const UDP_BUFFER_SIZE: usize = 17480; // 17kb
+const UDP_BUFFER_SIZE: usize = 100000; // 17kb
                                       // const UDP_TIMEOUT: u64 = 10 * 1000; // 10sec
 const CHANNEL_LEN: usize = 100;
 
