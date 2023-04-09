@@ -12,6 +12,7 @@ const UDP_BUFFER_SIZE: usize = 17480; // 17480 17kb TODO: make it formal
 use crate::pipeline::construct_gdp_forward_from_bytes;
 use crate::structs::GDPHeaderInTransit;
 use rand::Rng;
+use crate::{structs::{GdpDirection, GdpAdvertisement}, pipeline::construct_gdp_advertisement_from_structs};
 
 fn generate_random_gdp_name_for_thread() -> GDPName {
     // u8:4
@@ -204,7 +205,7 @@ async fn handle_tcp_stream(
                                 ).await;
                             }
                             else if deserialized.action == GdpAction::Advertise {
-                                let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name);
+                                let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, payload, thread_name);
                                 proc_gdp_packet(packet,  // packet
                                     rib_tx,  //used to send packet to rib
                                     channel_tx, // used to send GDPChannel to rib
@@ -337,7 +338,19 @@ pub async fn tcp_to_peer(
     let m_gdp_name = generate_random_gdp_name_for_thread();
     info!("TCP takes gdp name {:?}", m_gdp_name);
 
-    let node_advertisement = construct_gdp_advertisement_from_bytes(m_gdp_name, m_gdp_name);
+    let advertisement = GdpAdvertisement{ 
+        name: m_gdp_name, 
+        address: None, 
+        port: None, 
+        direction: GdpDirection::Both, 
+        description: Some(format!("TCP connection to {}", addr))
+    };
+
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        m_gdp_name, 
+        advertisement, 
+        m_gdp_name);
+
     proc_gdp_packet(
         node_advertisement, // packet
         &rib_tx,            // used to send packet to rib

@@ -68,13 +68,14 @@ impl fmt::Display for GDPName {
 pub enum GdpDirection {
     Source,
     Sink,
+    Both,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GdpAdvertisement {
     pub name: GDPName,
-    pub address: String,
-    pub port: u16,
+    pub address: Option<String>,
+    pub port: Option<u16>,
     pub direction: GdpDirection,
     pub description: Option<String>
 }

@@ -13,12 +13,14 @@ use serde_json;
 use std::str;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::mpsc::UnboundedSender;
+use crate::{structs::{GdpDirection, GdpAdvertisement}, pipeline::construct_gdp_advertisement_from_structs};
 
 #[cfg(feature = "ros")]
 pub async fn ros_publisher(
     rib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>, node_name: String,
     topic_name: String, topic_type: String, certificate: Vec<u8>,
 ) {
+
     let node_gdp_name = GDPName(get_gdp_name_from_topic(
         &node_name,
         &topic_type,
@@ -45,8 +47,20 @@ pub async fn ros_publisher(
         node.spin_once(std::time::Duration::from_millis(100));
     });
 
+    let advertisement = GdpAdvertisement{ 
+        name: topic_gdp_name, 
+        address: None, 
+        port: None, 
+        direction: GdpDirection::Source, 
+        description: Some(format!("ROS connection of topic {}", topic_name))
+    };
+
+
     // note that different from other connection ribs, we send advertisement ahead of time
-    let node_advertisement = construct_gdp_advertisement_from_bytes(topic_gdp_name, node_gdp_name);
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        topic_gdp_name, 
+        advertisement, 
+        node_gdp_name);
     proc_gdp_packet(
         node_advertisement, // packet
         &rib_tx,            // used to send packet to rib
@@ -79,6 +93,7 @@ pub async fn ros_subscriber(
     rib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>, node_name: String,
     topic_name: String, topic_type: String, certificate: Vec<u8>,
 ) {
+
     let node_gdp_name = GDPName(get_gdp_name_from_topic(
         &node_name,
         &topic_type,
@@ -105,7 +120,20 @@ pub async fn ros_subscriber(
     });
 
     // note that different from other connection ribs, we send advertisement ahead of time
-    let node_advertisement = construct_gdp_advertisement_from_bytes(topic_gdp_name, node_gdp_name);
+    let advertisement = GdpAdvertisement{ 
+        name: topic_gdp_name, 
+        address: None, 
+        port: None, 
+        direction: GdpDirection::Sink, 
+        description: Some(format!("ROS subscriber of topic {}", topic_name))
+    };
+
+
+    // note that different from other connection ribs, we send advertisement ahead of time
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        topic_gdp_name, 
+        advertisement, 
+        node_gdp_name);
     proc_gdp_packet(
         node_advertisement, // packet
         &rib_tx,            // used to send packet to rib
@@ -164,7 +192,20 @@ pub async fn ros_subscriber_image(
     });
 
     // note that different from other connection ribs, we send advertisement ahead of time
-    let node_advertisement = construct_gdp_advertisement_from_bytes(topic_gdp_name, node_gdp_name);
+    let advertisement = GdpAdvertisement{ 
+        name: topic_gdp_name, 
+        address: None, 
+        port: None, 
+        direction: GdpDirection::Sink, 
+        description: Some(format!("ROS subscriber of topic {}", topic_name))
+    };
+
+
+    // note that different from other connection ribs, we send advertisement ahead of time
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        topic_gdp_name, 
+        advertisement, 
+        node_gdp_name);
     proc_gdp_packet(
         node_advertisement, // packet
         &rib_tx,            // used to send packet to rib
@@ -228,7 +269,21 @@ pub async fn ros_publisher_image(
     });
 
     // note that different from other connection ribs, we send advertisement ahead of time
-    let node_advertisement = construct_gdp_advertisement_from_bytes(topic_gdp_name, node_gdp_name);
+    let advertisement = GdpAdvertisement{ 
+        name: topic_gdp_name, 
+        address: None, 
+        port: None, 
+        direction: GdpDirection::Source, 
+        description: Some(format!("ROS publisher of topic {}", topic_name))
+    };
+
+
+    // note that different from other connection ribs, we send advertisement ahead of time
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        topic_gdp_name, 
+        advertisement, 
+        node_gdp_name);
+
     proc_gdp_packet(
         node_advertisement, // packet
         &rib_tx,            // used to send packet to rib

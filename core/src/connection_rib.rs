@@ -4,6 +4,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedReceiver;
+use crate::{structs::{GdpDirection, GdpAdvertisement}, pipeline::construct_gdp_advertisement_from_structs};
 
 async fn send_to_destination(destinations: Vec<GDPChannel>, packet: GDPPacket) {
     for dst in destinations {
@@ -128,14 +129,16 @@ pub async fn connection_router(
                     let dst = update.sink;
                     for (name, _) in &coonection_rib_table {
                         info!("flushing advertisement for {} to {:?}", name, dst);
-                        let packet = construct_gdp_advertisement_from_bytes(*name, *name);
-                        let result = dst.send(packet.clone());
-                        match result {
-                            Ok(_) => {}
-                            Err(_) => {
-                                warn!("Send Failure: channel sent to destination is closed");
-                            }
-                        }
+
+                        //TODO: change this part by storing the advertisement in the connection rib table
+                        // let packet = construct_gdp_advertisement_from_struct(*name, advertisement, *name);
+                        // let result = dst.send(packet.clone());
+                        // match result {
+                        //     Ok(_) => {}
+                        //     Err(_) => {
+                        //         warn!("Send Failure: channel sent to destination is closed");
+                        //     }
+                        // }
                     }
                 }
             }

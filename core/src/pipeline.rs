@@ -1,4 +1,4 @@
-use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction};
+use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction, GdpAdvertisement};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// construct gdp struct from bytes
@@ -19,18 +19,38 @@ pub fn construct_gdp_forward_from_bytes(
 /// construct gdp struct from bytes
 /// bytes is put as payload
 pub fn construct_gdp_advertisement_from_bytes(
-    destination: GDPName, 
+    advertised_name: GDPName, 
+    gdp_advertisement: Vec<u8>,
+    source: GDPName
+) -> GDPPacket {
+    let deserialized_gdp_advertisement = serde_json::from_str(&String::from_utf8_lossy(&gdp_advertisement)).unwrap();
+    GDPPacket {
+        action: GdpAction::Advertise,
+        gdpname: advertised_name,
+        payload: None,
+        proto: None,
+        advertisement: Some(deserialized_gdp_advertisement),
+        source: source,
+    }
+}
+
+/// construct gdp struct from bytes
+/// bytes is put as payload
+pub fn construct_gdp_advertisement_from_structs(
+    advertised_name: GDPName, 
+    gdp_advertisement: GdpAdvertisement,
     source: GDPName
 ) -> GDPPacket {
     GDPPacket {
         action: GdpAction::Advertise,
-        gdpname: destination,
+        gdpname: advertised_name,
         payload: None,
         proto: None,
-        advertisement: None,
+        advertisement: Some(gdp_advertisement),
         source: source,
     }
 }
+
 
 /// construct a gdp packet struct
 /// we may want to use protobuf later

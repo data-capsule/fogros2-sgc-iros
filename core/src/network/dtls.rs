@@ -1,5 +1,5 @@
 use crate::network::udpstream::{UdpListener, UdpStream};
-use crate::pipeline::{construct_gdp_advertisement_from_bytes, proc_gdp_packet};
+use crate::pipeline::{construct_gdp_advertisement_from_bytes, proc_gdp_packet, construct_gdp_advertisement_from_structs};
 use openssl::{
     pkey::PKey,
     ssl::{Ssl, SslAcceptor, SslConnector, SslContext, SslMethod, SslVerifyMode},
@@ -11,7 +11,7 @@ use tokio_openssl::SslStream;
 use utils::app_config::AppConfig;
 
 use crate::pipeline::construct_gdp_forward_from_bytes;
-use crate::structs::GDPName;
+use crate::structs::{GDPName, GdpAdvertisement, GdpDirection};
 use crate::structs::GDPHeaderInTransit;
 use crate::structs::{GDPChannel, GDPPacket, GdpAction, Packet};
 use rand::Rng;
@@ -197,7 +197,7 @@ async fn handle_dtls_stream(
                         ).await;
                     }
                     else if deserialized.action == GdpAction::Advertise {
-                        let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name);
+                        let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, payload, thread_name);
                         proc_gdp_packet(packet,  // packet
                             rib_tx,  //used to send packet to rib
                             channel_tx, // used to send GDPChannel to rib
@@ -285,7 +285,19 @@ pub async fn dtls_to_peer(
     let m_gdp_name = generate_random_gdp_name_for_thread();
     info!("DTLS takes gdp name {:?}", m_gdp_name);
 
-    let node_advertisement = construct_gdp_advertisement_from_bytes(m_gdp_name, m_gdp_name);
+    let advertisement = GdpAdvertisement{ 
+        name: m_gdp_name, 
+        address: None, 
+        port: None, 
+        direction: GdpDirection::Both, 
+        description: Some(format!("DTLS connection to {}", addr))
+    };
+
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        m_gdp_name, 
+        advertisement, 
+        m_gdp_name);
+
     proc_gdp_packet(
         node_advertisement, // packet
         &rib_tx,            // used to send packet to rib
