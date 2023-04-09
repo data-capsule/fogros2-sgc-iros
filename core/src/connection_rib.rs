@@ -50,6 +50,25 @@ async fn broadcast_advertisement(
     }
 }
 
+fn insert_channel_to_rib_table(
+    rib_table: &mut HashMap<GDPName, Vec<GDPChannel>>,
+    channel: GDPChannel,
+) {
+    match rib_table.get_mut(&channel.gdpname) {
+        Some(v) => {
+            info!("adding to connection rib vec");
+            v.push(channel)
+        }
+        None =>{
+            info!("Creating a new entry of gdp name");
+            rib_table.insert(
+                channel.gdpname,
+                vec!(channel),
+            );
+        }
+    };
+}
+
 /// receive, check, and route GDP messages
 ///
 /// receive from a pool of receiver connections (one per interface)
@@ -64,7 +83,11 @@ pub async fn connection_router(
     // TODO: currently, we only take one rx due to select! limitation
     // will use FutureUnordered Instead
     let _receive_handle = tokio::spawn(async move {
-        let mut coonection_rib_table: HashMap<GDPName, Vec<GDPChannel>> = HashMap::new();
+        // a mapping between gdp_name and the corresponding description for debugging purpose
+        let mut name_table: HashMap<GDPName, String> = HashMap::new();
+        let mut source_rib_table: HashMap<GDPName, Vec<GDPChannel>> = HashMap::new();
+        let mut sink_rib_table: HashMap<GDPName, Vec<GDPChannel>> = HashMap::new();
+        let mut peer_rib_table: HashMap<GDPName, Vec<GDPChannel>> = HashMap::new();
         let mut counter = 0;
 
         // loop polling from
@@ -76,22 +99,15 @@ pub async fn connection_router(
                     counter += 1;
                     info!("RIB received the packet #{} with name {}", counter, &pkt.gdpname);
 
-
                     // find where to route
-                    match coonection_rib_table.get(&pkt.gdpname) {
+                    match sink_rib_table.get(&pkt.gdpname) {
                         Some(routing_dsts) => {
                             send_to_destination(routing_dsts.clone(), pkt).await;
-                            // for dst in coonection_rib_table.values(){
-                            //     info!("data {} from {} send to {}", pkt.gdpname, pkt.source, dst.advertisement.source);
-                            //     if dst.advertisement.source == pkt.source {
-                            //         continue;
-                            //     }
-                            //     send_to_destination(dst.channel.clone(), pkt.clone()).await;s
-                            // }
                         }
                         None => {
+                            // TODO: query
                             info!("{:} is not there, broadcasting...", pkt.gdpname);
-                            for routing_dsts in coonection_rib_table.values(){
+                            for routing_dsts in sink_rib_table.values(){
                                 send_to_destination(routing_dsts.clone(), pkt.clone()).await;
                             }
                         }
@@ -102,43 +118,45 @@ pub async fn connection_router(
                 Some(channel) = channel_rx.recv() => {
                     info!("channel registry received {:?}", channel);
                     // broadcast_advertisement(&channel, &coonection_rib_table).await;
-
-
-                    // coonection_rib_table.insert(
-                    //     channel.gdpname,
-                    //     channel.channel
-                    // );
-                    match  coonection_rib_table.get_mut(&channel.gdpname) {
-                        Some(v) => {
-                            info!("adding to connection rib vec");
-                            v.push(channel)
+                    let direction = channel.advertisement.advertisement.as_ref().unwrap().direction;
+                    match direction {
+                        GdpDirection::Source => {
+                            insert_channel_to_rib_table(&mut source_rib_table, channel);
                         }
-                        None =>{
-                            info!("Creating a new entry of gdp name");
-                            coonection_rib_table.insert(
-                                channel.gdpname,
-                                vec!(channel),
-                            );
+                        GdpDirection::Sink => {
+                            insert_channel_to_rib_table(&mut sink_rib_table, channel);
                         }
-                    };
-
+                        GdpDirection::Peer =>{
+                            insert_channel_to_rib_table(&mut peer_rib_table, channel);
+                        }
+                    }
                 },
 
+                // TODO: logic is very chaotic here, need to rewrite
                 Some(update) = stat_rs.recv() => {
                     // Note: incomplete implementation, only support flushing advertisement
                     let dst = update.sink;
-                    for (name, _) in &coonection_rib_table {
+                    // only advertise the name that is in the peer rib table(?)
+                    for (name, channel_info) in &peer_rib_table {
                         info!("flushing advertisement for {} to {:?}", name, dst);
 
-                        //TODO: change this part by storing the advertisement in the connection rib table
-                        // let packet = construct_gdp_advertisement_from_struct(*name, advertisement, *name);
-                        // let result = dst.send(packet.clone());
-                        // match result {
-                        //     Ok(_) => {}
-                        //     Err(_) => {
-                        //         warn!("Send Failure: channel sent to destination is closed");
-                        //     }
-                        // }
+                        let advertisement = GdpAdvertisement{ 
+                            name: *name, 
+                            address: None, 
+                            port: None, 
+                            direction: GdpDirection::Source, 
+                            description: Some(format!("RIB for name {}", name))
+                        };
+
+                        // TODO: change this part by storing the advertisement in the connection rib table
+                        let packet = construct_gdp_advertisement_from_structs(*name, advertisement, *name);
+                        let result = dst.send(packet.clone());
+                        match result {
+                            Ok(_) => {}
+                            Err(_) => {
+                                warn!("Send Failure: channel sent to destination is closed");
+                            }
+                        }
                     }
                 }
             }

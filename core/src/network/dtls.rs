@@ -289,7 +289,7 @@ pub async fn dtls_to_peer(
         name: m_gdp_name, 
         address: None, 
         port: None, 
-        direction: GdpDirection::Both, 
+        direction: GdpDirection::Peer, 
         description: Some(format!("DTLS connection to {}", addr))
     };
 

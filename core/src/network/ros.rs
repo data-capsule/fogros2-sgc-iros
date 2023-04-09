@@ -52,7 +52,7 @@ pub async fn ros_publisher(
         address: None, 
         port: None, 
         direction: GdpDirection::Source, 
-        description: Some(format!("ROS connection of topic {}", topic_name))
+        description: Some(format!("ROS publisher of topic {}", topic_name))
     };
 
 

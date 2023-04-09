@@ -68,7 +68,7 @@ impl fmt::Display for GDPName {
 pub enum GdpDirection {
     Source,
     Sink,
-    Both,
+    Peer, // both source and sink
 }
 
 #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]

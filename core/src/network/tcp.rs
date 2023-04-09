@@ -342,7 +342,7 @@ pub async fn tcp_to_peer(
         name: m_gdp_name, 
         address: None, 
         port: None, 
-        direction: GdpDirection::Both, 
+        direction: GdpDirection::Peer, 
         description: Some(format!("TCP connection to {}", addr))
     };
 
