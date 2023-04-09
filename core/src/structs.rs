@@ -64,6 +64,21 @@ impl fmt::Display for GDPName {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash, EnumIter)]
+pub enum GdpDirection {
+    Source,
+    Sink,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct GdpAdvertisement {
+    pub name: GDPName,
+    pub address: String,
+    pub port: u16,
+    pub direction: GdpDirection,
+    pub description: Option<String>
+}
+
 use crate::gdp_proto::GdpPacket;
 pub(crate) trait Packet {
     /// get protobuf object of the packet
@@ -71,7 +86,7 @@ pub(crate) trait Packet {
     /// get serialized byte array of the packet
     fn get_byte_payload(&self) -> Option<&Vec<u8>>;
 
-    fn get_header(&self) -> GDPPacketInTransit;
+    fn get_header(&self) -> GDPHeaderInTransit;
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -84,11 +99,12 @@ pub struct GDPPacket {
     // preferably forward directly without conversion
     pub payload: Option<Vec<u8>>,
     pub proto: Option<GdpPacket>,
+    pub advertisement: Option<GdpAdvertisement>,
     pub source: GDPName,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Copy)]
-pub struct GDPPacketInTransit {
+pub struct GDPHeaderInTransit {
     pub action: GdpAction,
     pub destination: GDPName,
     pub length: usize,
@@ -109,15 +125,15 @@ impl Packet for GDPPacket {
         }
     }
 
-    fn get_header(&self) -> GDPPacketInTransit {
+    fn get_header(&self) -> GDPHeaderInTransit {
         let transit_packet = match &self.payload {
-            Some(payload) => GDPPacketInTransit {
+            Some(payload) => GDPHeaderInTransit {
                 action: self.action,
                 destination: self.gdpname,
                 length: payload.len(),
             },
             None => {
-                GDPPacketInTransit {
+                GDPHeaderInTransit {
                     action: self.action,
                     destination: self.gdpname,
                     length: 0, // doesn't have any payload
