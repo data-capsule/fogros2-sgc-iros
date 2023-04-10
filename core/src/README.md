@@ -41,12 +41,19 @@ On a new packet:
         Advertisement: 
             Store information to its corresponding connection RIB
             Match NameType with 
-                Source: 
-                Sink: 
-                Peer: 
+                Source: add source to source rib
+                    if sink_rib has the name record
+                        inform ros topic manager
+                Sink: add sink to sink_rib
+                    if source_rib has the name record
+                        inform ros topic manager
+                Peer: add peer to rib
                 RIB: (a new RIB!) register the routing information with the RIB
 
 ```
 
-### Questions 
+### Q&A 
 1. How does publish and subscribe eventually peered? Who will initiate this peering?
+
+We are able to trace something like: [topic 256 bit name] is from [ROS local subscriber 256 bit name] which will be delivered from [DTLS peer 256 bit name].
+
