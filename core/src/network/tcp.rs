@@ -1,6 +1,8 @@
 use crate::pipeline::construct_gdp_advertisement_from_bytes;
+use crate::pipeline::construct_gdp_advertisement_from_structs;
 use crate::pipeline::proc_gdp_packet;
 
+use crate::structs::generate_random_gdp_name;
 use crate::structs::GDPName;
 use crate::structs::{GDPChannel, GDPPacket, GdpAction, Packet};
 use std::io;
@@ -10,18 +12,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 const UDP_BUFFER_SIZE: usize = 17480; // 17480 17kb TODO: make it formal
 use crate::pipeline::construct_gdp_forward_from_bytes;
-use crate::structs::GDPPacketInTransit;
-use rand::Rng;
+use crate::structs::GDPHeaderInTransit;
 
-fn generate_random_gdp_name_for_thread() -> GDPName {
-    // u8:4
-    GDPName([
-        rand::thread_rng().gen(),
-        rand::thread_rng().gen(),
-        rand::thread_rng().gen(),
-        rand::thread_rng().gen(),
-    ])
-}
+use crate::structs::GDPNameRecord;
 
 /// parse the header of the packet using the first null byte as delimiter
 /// return a vector of (header, payload) pairs if the header is complete
@@ -29,12 +22,12 @@ fn generate_random_gdp_name_for_thread() -> GDPName {
 fn parse_header_payload_pairs(
     mut buffer: Vec<u8>,
 ) -> (
-    Vec<(GDPPacketInTransit, Vec<u8>)>,
-    Option<(GDPPacketInTransit, Vec<u8>)>,
+    Vec<(GDPHeaderInTransit, Vec<u8>)>,
+    Option<(GDPHeaderInTransit, Vec<u8>)>,
 ) {
-    let mut header_payload_pairs: Vec<(GDPPacketInTransit, Vec<u8>)> = Vec::new();
+    let mut header_payload_pairs: Vec<(GDPHeaderInTransit, Vec<u8>)> = Vec::new();
     // TODO: get it to default trace later
-    let default_gdp_header: GDPPacketInTransit = GDPPacketInTransit {
+    let default_gdp_header: GDPHeaderInTransit = GDPHeaderInTransit {
         action: GdpAction::Noop,
         destination: GDPName([0u8, 0, 0, 0]),
         length: 0, // doesn't have any payload
@@ -50,7 +43,7 @@ fn parse_header_payload_pairs(
         let header_buf = header_and_remaining[0];
         let header: &str = std::str::from_utf8(header_buf).unwrap();
         info!("received header json string: {:?}", header);
-        let gdp_header_parsed = serde_json::from_str::<GDPPacketInTransit>(header);
+        let gdp_header_parsed = serde_json::from_str::<GDPHeaderInTransit>(header);
         if gdp_header_parsed.is_err() {
             // if the header is not complete, return the remaining
             warn!("header is not complete, return the remaining");
@@ -78,21 +71,22 @@ fn parse_header_payload_pairs(
 }
 
 /// handle one single session of tcpstream
-/// 1. init and advertise the mpsc channel to connection rib
+/// 1. init and advertise the mpsc channel to connection fib
 /// 2. select between
-///         incoming tcp packets -> receive and send to rib
-///         incomine packets from rib -> send to the tcp session
+///         incoming tcp packets -> receive and send to fib
+///         incomine packets from fib -> send to the tcp session
 async fn handle_tcp_stream(
-    stream: TcpStream, rib_tx: &UnboundedSender<GDPPacket>,
+    stream: TcpStream, fib_tx: &UnboundedSender<GDPPacket>,
     channel_tx: &UnboundedSender<GDPChannel>, m_tx: UnboundedSender<GDPPacket>,
     mut m_rx: UnboundedReceiver<GDPPacket>, thread_name: GDPName,
+    rib_query_tx: &UnboundedSender<GDPNameRecord>,
 ) {
     // ...
 
     // init variables
 
     let mut need_more_data_for_previous_header = false;
-    let mut remaining_gdp_header: GDPPacketInTransit = GDPPacketInTransit {
+    let mut remaining_gdp_header: GDPHeaderInTransit = GDPHeaderInTransit {
         action: GdpAction::Noop,
         destination: GDPName([0u8, 0, 0, 0]),
         length: 0, // doesn't have any payload
@@ -198,17 +192,21 @@ async fn handle_tcp_stream(
                             if deserialized.action == GdpAction::Forward {
                                 let packet = construct_gdp_forward_from_bytes(deserialized.destination, thread_name, payload); //todo
                                 proc_gdp_packet(packet,  // packet
-                                    rib_tx,  //used to send packet to rib
-                                    channel_tx, // used to send GDPChannel to rib
-                                    &m_tx //the sending handle of this connection
+                                    fib_tx,  //used to send packet tofib
+                                    channel_tx, // used to send GDPChannel tofib
+                                    &m_tx, //the sending handle of this connection
+                                    &rib_query_tx,
+                                    "".to_string(),
                                 ).await;
                             }
                             else if deserialized.action == GdpAction::Advertise {
-                                let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name);
+                                let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name, payload);
                                 proc_gdp_packet(packet,  // packet
-                                    rib_tx,  //used to send packet to rib
-                                    channel_tx, // used to send GDPChannel to rib
-                                    &m_tx //the sending handle of this connection
+                                    fib_tx,  //used to send packet tofib
+                                    channel_tx, // used to send GDPChannel tofib
+                                    &m_tx, //the sending handle of this connection
+                                    &rib_query_tx,
+                                    format!("{}-{}", "tcp", thread_name),
                                 ).await;
                             }
                             else{
@@ -287,33 +285,55 @@ async fn handle_tcp_stream(
                         }
                     }
                 }
+
+                if let Some(name_record) = pkt_to_forward.name_record {
+                    let name_record_string = serde_json::to_string(&name_record).unwrap();
+                    let name_record_buffer = name_record_string.as_bytes();
+                    info!("the name record length is {}", name_record_buffer.len());
+                    match stream.try_write(&name_record_buffer[..name_record_buffer.len()]) {
+                        Ok(_n) => {
+                            info!("advertisement with size {}", name_record_buffer.len());
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            info!("would block");
+                            stream.writable().await.expect("TCP stream is closed");
+                        }
+                        Err(_e) => {
+                            info!("Err of other kind");
+                            break
+                        }
+                    }
+                }
+
             },
         }
     }
 }
 
 /// listen at @param address and process on tcp accept()
-///     rib_tx: channel that send GDPPacket to rib
-///     channel_tx: channel that advertise GDPChannel to rib
+///     fib_tx: channel that send GDPPacket to fib
+///     channel_tx: channel that advertise GDPChannel to fib
 pub async fn tcp_listener(
-    addr: String, rib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
+    addr: String, fib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
+    rib_query_tx: UnboundedSender<GDPNameRecord>,
 ) {
     let listener = TcpListener::bind(&addr).await.unwrap();
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        let rib_tx = rib_tx.clone();
+        let fib_tx = fib_tx.clone();
         let channel_tx = channel_tx.clone();
-
+        let rib_query_tx = rib_query_tx.clone();
         // Process each socket concurrently.
         tokio::spawn(async move {
             let (m_tx, m_rx) = mpsc::unbounded_channel();
             handle_tcp_stream(
                 socket,
-                &rib_tx,
+                &fib_tx,
                 &channel_tx,
                 m_tx,
                 m_rx,
-                generate_random_gdp_name_for_thread(),
+                generate_random_gdp_name(),
+                &rib_query_tx,
             )
             .await
         });
@@ -321,8 +341,9 @@ pub async fn tcp_listener(
 }
 
 pub async fn tcp_to_peer(
-    addr: String, rib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
+    addr: String, fib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
     m_tx: UnboundedSender<GDPPacket>, m_rx: UnboundedReceiver<GDPPacket>,
+    rib_query_tx: UnboundedSender<GDPNameRecord>,
 ) {
     let stream = match TcpStream::connect(SocketAddr::from_str(&addr).unwrap()).await {
         Ok(s) => s,
@@ -334,27 +355,51 @@ pub async fn tcp_to_peer(
 
     println!("{:?}", stream);
 
-    let m_gdp_name = generate_random_gdp_name_for_thread();
+    let m_gdp_name = generate_random_gdp_name();
     info!("TCP takes gdp name {:?}", m_gdp_name);
 
-    let node_advertisement = construct_gdp_advertisement_from_bytes(m_gdp_name, m_gdp_name);
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        m_gdp_name,
+        m_gdp_name,
+        crate::structs::GDPNameRecord {
+            record_type: crate::structs::GDPNameRecordType::UPDATE,
+            gdpname: m_gdp_name,
+            source_gdpname: m_gdp_name,
+            webrtc_offer: None,
+            ip_address: Some(addr.clone()),
+            indirect: None,
+            ros: None,
+        },
+    );
     proc_gdp_packet(
         node_advertisement, // packet
-        &rib_tx,            // used to send packet to rib
-        &channel_tx,        // used to send GDPChannel to rib
+        &fib_tx,            // used to send packet to fib
+        &channel_tx,        // used to send GDPChannel to fib
         &m_tx,              // the sending handle of this connection
+        &rib_query_tx,      // used to query rib
+        format!("tcp_to_peer({})", addr),
     )
     .await;
-    handle_tcp_stream(stream, &rib_tx, &channel_tx, m_tx, m_rx, m_gdp_name).await;
+    handle_tcp_stream(
+        stream,
+        &fib_tx,
+        &channel_tx,
+        m_tx,
+        m_rx,
+        m_gdp_name,
+        &rib_query_tx,
+    )
+    .await;
 }
 
-/// does not go to rib when peering
+/// does not go tofib when peering
 pub async fn tcp_to_peer_direct(
     addr: String,
-    rib_tx: UnboundedSender<GDPPacket>,
+    fib_tx: UnboundedSender<GDPPacket>,
     channel_tx: UnboundedSender<GDPChannel>,
     peer_tx: UnboundedSender<GDPPacket>,   // used
     peer_rx: UnboundedReceiver<GDPPacket>, // used to send packet over the network
+    rib_query_tx: UnboundedSender<GDPNameRecord>,
 ) {
     let stream = match TcpStream::connect(SocketAddr::from_str(&addr).unwrap()).await {
         Ok(s) => s,
@@ -366,8 +411,17 @@ pub async fn tcp_to_peer_direct(
 
     println!("{:?}", stream);
 
-    let m_gdp_name = generate_random_gdp_name_for_thread();
+    let m_gdp_name = generate_random_gdp_name();
     info!("TCP connection takes gdp name {:?}", m_gdp_name);
 
-    handle_tcp_stream(stream, &rib_tx, &channel_tx, peer_tx, peer_rx, m_gdp_name).await;
+    handle_tcp_stream(
+        stream,
+        &fib_tx,
+        &channel_tx,
+        peer_tx,
+        peer_rx,
+        m_gdp_name,
+        &rib_query_tx,
+    )
+    .await;
 }

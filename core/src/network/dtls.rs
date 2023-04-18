@@ -1,5 +1,8 @@
 use crate::network::udpstream::{UdpListener, UdpStream};
-use crate::pipeline::{construct_gdp_advertisement_from_bytes, proc_gdp_packet};
+use crate::pipeline::{
+    construct_gdp_advertisement_from_bytes, construct_gdp_advertisement_from_structs,
+    proc_gdp_packet,
+};
 use openssl::{
     pkey::PKey,
     ssl::{Ssl, SslAcceptor, SslConnector, SslContext, SslMethod, SslVerifyMode},
@@ -11,16 +14,16 @@ use tokio_openssl::SslStream;
 use utils::app_config::AppConfig;
 
 use crate::pipeline::construct_gdp_forward_from_bytes;
-use crate::structs::GDPName;
-use crate::structs::GDPPacketInTransit;
+use crate::structs::GDPHeaderInTransit;
 use crate::structs::{GDPChannel, GDPPacket, GdpAction, Packet};
+use crate::structs::{GDPName, GDPNameRecord};
 use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 const UDP_BUFFER_SIZE: usize = 17480; // 17kb
 
-fn generate_random_gdp_name_for_thread() -> GDPName {
+fn generate_random_gdp_name() -> GDPName {
     // u8:4
     GDPName([
         rand::thread_rng().gen(),
@@ -32,15 +35,15 @@ fn generate_random_gdp_name_for_thread() -> GDPName {
 /// parse the header of the packet using the first null byte as delimiter
 /// return a vector of (header, payload) pairs if the header is complete
 /// return the remaining (header, payload) pairs if the header is incomplete
-fn parse_header_payload_pairs(
+pub fn parse_header_payload_pairs(
     mut buffer: Vec<u8>,
 ) -> (
-    Vec<(GDPPacketInTransit, Vec<u8>)>,
-    Option<(GDPPacketInTransit, Vec<u8>)>,
+    Vec<(GDPHeaderInTransit, Vec<u8>)>,
+    Option<(GDPHeaderInTransit, Vec<u8>)>,
 ) {
-    let mut header_payload_pairs: Vec<(GDPPacketInTransit, Vec<u8>)> = Vec::new();
+    let mut header_payload_pairs: Vec<(GDPHeaderInTransit, Vec<u8>)> = Vec::new();
     // TODO: get it to default trace later
-    let default_gdp_header: GDPPacketInTransit = GDPPacketInTransit {
+    let default_gdp_header: GDPHeaderInTransit = GDPHeaderInTransit {
         action: GdpAction::Noop,
         destination: GDPName([0u8, 0, 0, 0]),
         length: 0, // doesn't have any payload
@@ -56,7 +59,7 @@ fn parse_header_payload_pairs(
         let header_buf = header_and_remaining[0];
         let header: &str = std::str::from_utf8(header_buf).unwrap();
         info!("received header json string: {:?}", header);
-        let gdp_header_parsed = serde_json::from_str::<GDPPacketInTransit>(header);
+        let gdp_header_parsed = serde_json::from_str::<GDPHeaderInTransit>(header);
         if gdp_header_parsed.is_err() {
             // if the header is not complete, return the remaining
             warn!("header is not complete, return the remaining");
@@ -110,18 +113,19 @@ fn get_epoch_ms() -> u128 {
 }
 
 /// handle one single session of dtls
-/// 1. init and advertise the mpsc channel to connection rib
+/// 1. init and advertise the mpsc channel to connection fib
 /// 2. select between
-///         incoming dtls packets -> receive and send to rib
-///         incomine packets from rib -> send to the tcp session
+///         incoming dtls packets -> receive and send to fib
+///         incomine packets from fib -> send to the tcp session
 #[allow(unused_assignments)]
 async fn handle_dtls_stream(
-    mut stream: SslStream<UdpStream>, rib_tx: &UnboundedSender<GDPPacket>,
+    mut stream: SslStream<UdpStream>, fib_tx: &UnboundedSender<GDPPacket>,
     channel_tx: &UnboundedSender<GDPChannel>, m_tx: UnboundedSender<GDPPacket>,
     mut m_rx: UnboundedReceiver<GDPPacket>, thread_name: GDPName,
+    rib_query_tx: &UnboundedSender<GDPNameRecord>,
 ) {
     let mut need_more_data_for_previous_header = false;
-    let mut remaining_gdp_header: GDPPacketInTransit = GDPPacketInTransit {
+    let mut remaining_gdp_header: GDPHeaderInTransit = GDPHeaderInTransit {
         action: GdpAction::Noop,
         destination: GDPName([0u8, 0, 0, 0]),
         length: 0, // doesn't have any payload
@@ -191,17 +195,42 @@ async fn handle_dtls_stream(
                     if deserialized.action == GdpAction::Forward {
                         let packet = construct_gdp_forward_from_bytes(deserialized.destination, thread_name, payload); //todo
                         proc_gdp_packet(packet,  // packet
-                            rib_tx,  //used to send packet to rib
-                            channel_tx, // used to send GDPChannel to rib
-                            &m_tx //the sending handle of this connection
+                            fib_tx,  //used to send packet to fib
+                            channel_tx, // used to send GDPChannel to fib
+                            &m_tx, //the sending handle of this connection
+                            &rib_query_tx,
+                            "".to_string(),
                         ).await;
                     }
                     else if deserialized.action == GdpAction::Advertise {
-                        let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name);
+                        info!("received advertise packet from {}", deserialized.destination);
+                        let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name, payload);
                         proc_gdp_packet(packet,  // packet
-                            rib_tx,  //used to send packet to rib
-                            channel_tx, // used to send GDPChannel to rib
-                            &m_tx //the sending handle of this connection
+                            fib_tx,  //used to send packet to fib
+                            channel_tx, // used to send GDPChannel to fib
+                            &m_tx, //the sending handle of this connection
+                            &rib_query_tx,
+                            format!("DTLS Advertise {} from thread {}", deserialized.destination, thread_name),
+                        ).await;
+                    }
+                    else if deserialized.action == GdpAction::RibGet {
+                        let name_record:GDPNameRecord = serde_json::from_slice(&payload).unwrap();
+                        info!("received RIB get request {:?}", name_record);
+                        rib_query_tx.send(name_record).expect("send to rib failure");
+                    }
+                    else if deserialized.action == GdpAction::RibReply {
+                        let name_record:GDPNameRecord = serde_json::from_slice(&payload).unwrap();
+                        info!("received RIB get request {:?}", name_record);
+                        rib_query_tx.send(name_record).expect("send to rib failure");
+                    }
+                    else if deserialized.action == GdpAction::AdvertiseResponse {
+                        let packet = construct_gdp_advertisement_from_bytes(deserialized.destination, thread_name, payload);
+                        proc_gdp_packet(packet,  // packet
+                            fib_tx,  //used to send packet to fib
+                            channel_tx, // used to send GDPChannel to fib
+                            &m_tx, //the sending handle of this connection
+                            &rib_query_tx,
+                            format!("DTLS Advertise Response {} from thread {}", deserialized.destination, thread_name),
                         ).await;
                     }
                     else{
@@ -239,14 +268,22 @@ async fn handle_dtls_stream(
                     info!("the payload length is {}", payload.len());
                     stream.write_all(&payload[..payload.len()]).await.unwrap();
                 }
+
+                if let Some(name_record) = pkt_to_forward.name_record {
+                    let name_record_string = serde_json::to_string(&name_record).unwrap();
+                    let name_record_buffer = name_record_string.as_bytes();
+                    info!("the name record length is {}", name_record_buffer.len());
+                    stream.write_all(&name_record_buffer[..name_record_buffer.len()]).await.unwrap();
+                }
             }
         }
     }
 }
 
 pub async fn dtls_to_peer(
-    addr: String, rib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
+    addr: String, fib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
     m_tx: UnboundedSender<GDPPacket>, m_rx: UnboundedReceiver<GDPPacket>,
+    rib_query_tx: UnboundedSender<GDPNameRecord>,
 ) {
     let stream = UdpStream::connect(SocketAddr::from_str(&addr).unwrap())
         .await
@@ -282,27 +319,51 @@ pub async fn dtls_to_peer(
     println!("{:?}", stream);
     Pin::new(&mut stream).connect().await.unwrap();
 
-    let m_gdp_name = generate_random_gdp_name_for_thread();
+    let m_gdp_name = generate_random_gdp_name();
     info!("DTLS takes gdp name {:?}", m_gdp_name);
 
-    let node_advertisement = construct_gdp_advertisement_from_bytes(m_gdp_name, m_gdp_name);
+    let node_advertisement = construct_gdp_advertisement_from_structs(
+        m_gdp_name,
+        m_gdp_name,
+        crate::structs::GDPNameRecord {
+            record_type: crate::structs::GDPNameRecordType::UPDATE,
+            gdpname: m_gdp_name,
+            source_gdpname: m_gdp_name,
+            webrtc_offer: None,
+            ip_address: Some(addr.clone()),
+            indirect: None,
+            ros: None,
+        },
+    );
     proc_gdp_packet(
         node_advertisement, // packet
-        &rib_tx,            // used to send packet to rib
-        &channel_tx,        // used to send GDPChannel to rib
+        &fib_tx,            // used to send packet to fib
+        &channel_tx,        // used to send GDPChannel to fib
         &m_tx,              // the sending handle of this connection
+        &rib_query_tx,
+        format!("DTLS to peer {}", addr),
     )
     .await;
-    handle_dtls_stream(stream, &rib_tx, &channel_tx, m_tx, m_rx, m_gdp_name).await;
+    handle_dtls_stream(
+        stream,
+        &fib_tx,
+        &channel_tx,
+        m_tx,
+        m_rx,
+        m_gdp_name,
+        &rib_query_tx,
+    )
+    .await;
 }
 
-/// does not go to rib when peering
+/// does not go to fib when peering
 pub async fn dtls_to_peer_direct(
     addr: String,
-    rib_tx: UnboundedSender<GDPPacket>,
+    fib_tx: UnboundedSender<GDPPacket>,
     channel_tx: UnboundedSender<GDPChannel>,
     peer_tx: UnboundedSender<GDPPacket>,   // used
     peer_rx: UnboundedReceiver<GDPPacket>, // used to send packet over the network
+    rib_query_tx: UnboundedSender<GDPNameRecord>,
 ) {
     let stream = UdpStream::connect(SocketAddr::from_str(&addr).unwrap())
         .await
@@ -339,14 +400,24 @@ pub async fn dtls_to_peer_direct(
     println!("{:?}", stream);
     Pin::new(&mut stream).connect().await.unwrap();
 
-    let m_gdp_name = generate_random_gdp_name_for_thread();
+    let m_gdp_name = generate_random_gdp_name();
     info!("dTLS connection takes gdp name {:?}", m_gdp_name);
 
-    handle_dtls_stream(stream, &rib_tx, &channel_tx, peer_tx, peer_rx, m_gdp_name).await;
+    handle_dtls_stream(
+        stream,
+        &fib_tx,
+        &channel_tx,
+        peer_tx,
+        peer_rx,
+        m_gdp_name,
+        &rib_query_tx,
+    )
+    .await;
 }
 
 pub async fn dtls_listener(
-    addr: String, rib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
+    addr: String, fib_tx: UnboundedSender<GDPPacket>, channel_tx: UnboundedSender<GDPChannel>,
+    rib_query_tx: UnboundedSender<GDPNameRecord>,
 ) {
     let config = AppConfig::fetch().unwrap();
     let _ca_cert = format!("./scripts/crypto/{}/ca-root.pem", config.crypto_name);
@@ -369,8 +440,9 @@ pub async fn dtls_listener(
     .expect("ssl acceptor failed");
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        let rib_tx = rib_tx.clone();
+        let fib_tx = fib_tx.clone();
         let channel_tx = channel_tx.clone();
+        let rib_query_tx = rib_query_tx.clone();
         let acceptor = acceptor.clone();
         // TODO: loop here is not correct
         tokio::spawn(async move {
@@ -378,9 +450,18 @@ pub async fn dtls_listener(
             let ssl = Ssl::new(&acceptor).unwrap();
             let mut stream = tokio_openssl::SslStream::new(ssl, socket).unwrap();
             Pin::new(&mut stream).accept().await.unwrap();
-            let m_gdp_name = generate_random_gdp_name_for_thread();
+            let m_gdp_name = generate_random_gdp_name();
             info!("DTLS listener takes gdp name {:?}", m_gdp_name);
-            handle_dtls_stream(stream, &rib_tx, &channel_tx, m_tx, m_rx, m_gdp_name).await
+            handle_dtls_stream(
+                stream,
+                &fib_tx,
+                &channel_tx,
+                m_tx,
+                m_rx,
+                m_gdp_name,
+                &rib_query_tx,
+            )
+            .await
         });
     }
 }

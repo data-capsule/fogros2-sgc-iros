@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use rand::Rng;
 use std::fmt;
 use strum_macros::EnumIter;
 use tokio::sync::mpsc::UnboundedSender;
@@ -11,10 +12,11 @@ pub enum GdpAction {
     Noop = 0,
     Forward = 1,
     Advertise = 2,
-    RibGet = 3,
-    RibReply = 4,
-    Nack = 5,
-    Control = 6,
+    AdvertiseResponse = 3,
+    RibGet = 4,
+    RibReply = 5,
+    Nack = 6,
+    Control = 7,
 }
 
 impl Default for GdpAction {
@@ -34,6 +36,7 @@ impl TryFrom<u8> for GdpAction {
             x if x == GdpAction::Forward as u8 => Ok(GdpAction::Forward),
             x if x == GdpAction::Nack as u8 => Ok(GdpAction::Nack),
             x if x == GdpAction::Control as u8 => Ok(GdpAction::Control),
+            x if x == GdpAction::AdvertiseResponse as u8 => Ok(GdpAction::AdvertiseResponse),
             unknown => Err(anyhow!("Unknown action byte ({:?})", unknown)),
         }
     }
@@ -64,17 +67,25 @@ impl fmt::Display for GDPName {
     }
 }
 
-use crate::gdp_proto::GdpPacket;
+pub fn generate_random_gdp_name() -> GDPName {
+    // u8:4
+    GDPName([
+        rand::thread_rng().gen(),
+        rand::thread_rng().gen(),
+        rand::thread_rng().gen(),
+        rand::thread_rng().gen(),
+    ])
+}
+
 pub(crate) trait Packet {
     /// get protobuf object of the packet
-    fn get_proto(&self) -> Option<&GdpPacket>;
     /// get serialized byte array of the packet
     fn get_byte_payload(&self) -> Option<&Vec<u8>>;
 
-    fn get_header(&self) -> GDPPacketInTransit;
+    fn get_header(&self) -> GDPHeaderInTransit;
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct GDPPacket {
     pub action: GdpAction,
     pub gdpname: GDPName,
@@ -83,25 +94,18 @@ pub struct GDPPacket {
     // converting back and forth between proto and u8 is expensive
     // preferably forward directly without conversion
     pub payload: Option<Vec<u8>>,
-    pub proto: Option<GdpPacket>,
+    pub name_record: Option<GDPNameRecord>,
     pub source: GDPName,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone, Copy)]
-pub struct GDPPacketInTransit {
+pub struct GDPHeaderInTransit {
     pub action: GdpAction,
     pub destination: GDPName,
     pub length: usize,
 }
 
 impl Packet for GDPPacket {
-    fn get_proto(&self) -> Option<&GdpPacket> {
-        match &self.proto {
-            Some(p) => Some(p),
-            None => None, // TODO
-        }
-    }
-
     fn get_byte_payload(&self) -> Option<&Vec<u8>> {
         match &self.payload {
             Some(p) => Some(p),
@@ -109,18 +113,25 @@ impl Packet for GDPPacket {
         }
     }
 
-    fn get_header(&self) -> GDPPacketInTransit {
+    fn get_header(&self) -> GDPHeaderInTransit {
+        let name_record_length = match &self.name_record {
+            Some(name_record) => serde_json::to_string(&name_record)
+                .unwrap()
+                .as_bytes()
+                .len(),
+            None => 0,
+        };
         let transit_packet = match &self.payload {
-            Some(payload) => GDPPacketInTransit {
+            Some(payload) => GDPHeaderInTransit {
                 action: self.action,
                 destination: self.gdpname,
-                length: payload.len(),
+                length: payload.len() + name_record_length,
             },
             None => {
-                GDPPacketInTransit {
+                GDPHeaderInTransit {
                     action: self.action,
                     destination: self.gdpname,
-                    length: 0, // doesn't have any payload
+                    length: name_record_length, // doesn't have any payload
                 }
             }
         };
@@ -142,8 +153,6 @@ impl fmt::Display for GDPPacket {
                 Err(_) => "unable to render",
             };
             write!(f, "{:?}: {:?}", self.gdpname, ret)
-        } else if let Some(payload) = &self.proto {
-            write!(f, "{:?}: {:?}", self.gdpname, payload)
         } else {
             write!(f, "{:?}: packet do not exist", self.gdpname)
         }
@@ -153,8 +162,40 @@ impl fmt::Display for GDPPacket {
 #[derive(Debug, Clone)]
 pub struct GDPChannel {
     pub gdpname: GDPName,
+    pub source: GDPName,
     pub channel: UnboundedSender<GDPPacket>,
-    pub advertisement: GDPPacket,
+    pub comment: String,
+}
+
+// union in rust is unsafe, use struct instead
+// name record is what being stored in RIB and used for routing
+// one can resolve the GDPNameRecord using RIB put and get
+// it can be safely ported for another machine to connect
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct GDPNameRecord {
+    pub record_type: GDPNameRecordType,
+    pub gdpname: GDPName,
+    // the source of the record
+    // if the record is the query, then the source_gdpname is the destination
+    // that forward the data
+    pub source_gdpname: GDPName,
+    pub webrtc_offer: Option<String>,
+    pub ip_address: Option<String>,
+    pub ros: Option<(String, String)>,
+    // indirect to another GDPName
+    // this occurs if certain gdpname is hosted on a machine;
+    // then we solve the GDP name to the machine's GDPName
+    pub indirect: Option<GDPName>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum GDPNameRecordType {
+    EMPTY,
+    INFO, // inform the existence of the record, does not replace if present
+    QUERY,
+    UPDATE, // update the existing record by replacing the old one
+    MERGE,  // merge-able into the existing record
+    DELETE,
 }
 
 use sha2::Digest;
@@ -164,8 +205,8 @@ pub fn get_gdp_name_from_topic(topic_name: &str, topic_type: &str, cert: &[u8]) 
     let mut hasher = Sha256::new();
 
     info!(
-        "Name is generated from topic_name: {}, topic_type: {}, cert: {:?}",
-        topic_name, topic_type, cert
+        "Name is generated from topic_name: {}, topic_type: {}, cert: (too long, not printed)",
+        topic_name, topic_type
     );
     // hash with name, type and certificate
     hasher.update(topic_name);
@@ -184,4 +225,15 @@ pub fn get_gdp_name_from_topic(topic_name: &str, topic_type: &str, cert: &[u8]) 
 #[derive(Debug, Clone)]
 pub struct GDPStatus {
     pub sink: UnboundedSender<GDPPacket>,
+}
+
+pub fn gdp_name_to_string(GDPName(name): GDPName) -> String {
+    format!("{:x}{:x}{:x}{:x}", name[0], name[1], name[2], name[3])
+}
+pub fn string_to_gdp_name(name: &str) -> GDPName {
+    let mut bytes = [0u8; 4];
+    for (i, byte) in name.as_bytes().chunks(2).enumerate() {
+        bytes[i] = u8::from_str_radix(std::str::from_utf8(byte).unwrap(), 16).unwrap();
+    }
+    GDPName(bytes)
 }

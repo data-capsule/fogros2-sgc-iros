@@ -1,4 +1,4 @@
-use crate::structs::{GDPChannel, GDPName, GDPPacket, GdpAction};
+use crate::structs::{GDPChannel, GDPName, GDPNameRecord, GDPPacket, GdpAction};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// construct gdp struct from bytes
@@ -10,80 +10,80 @@ pub fn construct_gdp_forward_from_bytes(
         action: GdpAction::Forward,
         gdpname: destination,
         payload: Some(buffer),
-        proto: None,
         source: source,
+        name_record: None,
     }
 }
 
 /// construct gdp struct from bytes
 /// bytes is put as payload
-pub fn construct_gdp_advertisement_from_bytes(destination: GDPName, source: GDPName) -> GDPPacket {
+pub fn construct_gdp_advertisement_from_structs(
+    destination: GDPName, source: GDPName, name_record: GDPNameRecord,
+) -> GDPPacket {
     GDPPacket {
         action: GdpAction::Advertise,
         gdpname: destination,
+        source,
         payload: None,
-        proto: None,
-        source: source,
+        name_record: Some(name_record),
     }
 }
 
-/// construct a gdp packet struct
-/// we may want to use protobuf later
-/// this part is facilitate testing only
-pub fn populate_gdp_struct_from_bytes(buffer: Vec<u8>) -> GDPPacket {
-    let received_str: Vec<&str> = std::str::from_utf8(&buffer)
-        .unwrap()
-        .trim()
-        .split(",")
-        .collect();
-    let m_gdp_action = match received_str[0] {
-        "ADV" => GdpAction::Advertise,
-        "FWD" => GdpAction::Forward,
-        _ => GdpAction::Noop,
-    };
-
-    let m_gdp_name = match &received_str[1][0..1] {
-        "1" => GDPName([1, 1, 1, 1]),
-        "2" => GDPName([2, 2, 2, 2]),
-        _ => GDPName([0, 0, 0, 0]),
-    };
-
+pub fn construct_gdp_advertisement_from_bytes(
+    destination: GDPName, source: GDPName, advertisement_packet: Vec<u8>,
+) -> GDPPacket {
+    if advertisement_packet.len() == 0 {
+        warn!("advertisement packet is empty");
+        return GDPPacket {
+            action: GdpAction::Advertise,
+            gdpname: destination,
+            source: source,
+            payload: None,
+            name_record: None,
+        };
+    }
     GDPPacket {
-        action: m_gdp_action,
-        gdpname: m_gdp_name,
-        payload: Some(buffer),
-        proto: None,
-        source: GDPName([0, 0, 0, 0]),
+        action: GdpAction::Advertise,
+        gdpname: destination,
+        source: source,
+        payload: None,
+        name_record: Some(
+            serde_json::from_str::<GDPNameRecord>(
+                std::str::from_utf8(&advertisement_packet).unwrap(),
+            )
+            .unwrap(),
+        ),
     }
 }
 
-use crate::gdp_proto::GdpPacket;
-
-pub fn populate_gdp_struct_from_proto(proto: GdpPacket) -> GDPPacket {
-    // GDPPacket {
-    //     action: GdpAction::try_from(proto.action as u8).unwrap(),
-    //     gdpname: proto.receiver,
-    //     payload: Some(buffer),
-    //     proto: None,
-    // }
-
-    // TODO: currently, populate directly from payload as placeholder
-    populate_gdp_struct_from_bytes(proto.payload)
+/// construct rib query from bytes
+pub fn construct_rib_query_from_bytes(
+    destination: GDPName, source: GDPName, name_record: GDPNameRecord,
+) -> GDPPacket {
+    GDPPacket {
+        action: GdpAction::RibGet,
+        gdpname: destination,
+        source: source,
+        payload: None,
+        name_record: Some(name_record),
+    }
 }
 
 /// parses the processsing received GDP packets
 /// match GDP action and send the packets with corresponding actual actions
 ///
 ///  proc_gdp_packet(buf,  // packet
-///               rib_tx.clone(),  //used to send packet to rib
-///               channel_tx.clone(), // used to send GDPChannel to rib
+///               fib_tx.clone(),  //used to send packet to fib
+///               channel_tx.clone(), // used to send GDPChannel to fib
 ///               m_tx.clone() //the sending handle of this connection
 ///  );
 pub async fn proc_gdp_packet(
     gdp_packet: GDPPacket,
-    rib_tx: &UnboundedSender<GDPPacket>, // used to send packet to rib
-    channel_tx: &UnboundedSender<GDPChannel>, // used to send GDPChannel to rib
+    fib_tx: &UnboundedSender<GDPPacket>, // used to send packet to fib
+    channel_tx: &UnboundedSender<GDPChannel>, // used to send GDPChannel to fib
     m_tx: &UnboundedSender<GDPPacket>,   // the sending handle of this connection
+    rib_tx: &UnboundedSender<GDPNameRecord>, // used to send packet to rib
+    comment: String,
 ) {
     // Vec<u8> to GDP Packet
     // let gdp_packet = populate_gdp_struct(packet);
@@ -95,27 +95,32 @@ pub async fn proc_gdp_packet(
             // construct and send channel to RIB
             let channel = GDPChannel {
                 gdpname: gdp_name,
+                source: gdp_packet.source,
                 channel: m_tx.clone(),
-                advertisement: gdp_packet,
+                comment,
             };
+            if let Some(record) = gdp_packet.name_record {
+                rib_tx.send(record).expect("send to rib failure");
+            }
+            // rib_tx.send(gdp_packet.name_record.unwrap()).expect("send to rib failure");
             channel_tx
                 .send(channel)
                 .expect("channel_tx channel closed!");
         }
         GdpAction::Forward => {
             // send the packet to RIB
-            match rib_tx.send(gdp_packet) {
+            match fib_tx.send(gdp_packet) {
                 Ok(_) => {}
                 Err(_) => error!(
-                    "Unable to forward the packet because connection channel or rib is closed"
+                    "Unable to forward the packet because connection channel orfib is closed"
                 ),
             };
         }
         GdpAction::RibGet => {
-            // handle rib query by responding with the RIB item
+            // handle fib query by responding with the RIB item
         }
         GdpAction::RibReply => {
-            // update local rib with the rib reply
+            // update local fib with the fib reply
         }
 
         GdpAction::Noop => {

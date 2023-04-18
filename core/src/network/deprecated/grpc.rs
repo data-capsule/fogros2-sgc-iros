@@ -1,7 +1,6 @@
 use crate::gdp_proto::globaldataplane_client::GlobaldataplaneClient;
 use crate::gdp_proto::globaldataplane_server::Globaldataplane;
 use crate::gdp_proto::{GdpPacket, GdpResponse, GdpUpdate};
-use crate::pipeline::populate_gdp_struct_from_proto;
 use crate::structs::GDPPacket;
 use futures::future;
 use tokio::sync::mpsc::Sender;
@@ -14,7 +13,7 @@ pub struct GDPService {
     // NOTE: this is not the gdp packet in protobuf
     // it is the gdp packet in struct
     // (shall we rename it?)
-    pub rib_tx: Sender<GDPPacket>,
+    pub fib_tx: Sender<GDPPacket>,
     // the control data
     pub status_tx: Sender<GdpUpdate>,
 }
@@ -29,7 +28,7 @@ impl Globaldataplane for GDPService {
 
         let packet = populate_gdp_struct_from_proto(request_body);
 
-        self.rib_tx.send(packet).await.expect("send packet failed");
+        self.fib_tx.send(packet).await.expect("send packet failed");
 
         // TODO: a more meaningful ack?
         let forward_response = "ACK";

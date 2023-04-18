@@ -3,13 +3,15 @@ extern crate tokio_core;
 use std::env;
 use std::time::Duration;
 
-use crate::connection_rib::connection_router;
+use crate::connection_fib::connection_fib;
 
-use crate::network::dtls::{dtls_listener, dtls_test_client, dtls_to_peer};
+use crate::network::dtls::{dtls_listener, dtls_to_peer};
 use crate::network::tcp::{tcp_listener, tcp_to_peer};
+use crate::rib::local_rib_handler;
 use crate::structs::GDPStatus;
 use crate::topic_manager::ros_topic_manager;
 use futures::future;
+
 use tokio::sync::mpsc::{self};
 
 use tokio::time::sleep;
@@ -48,31 +50,77 @@ async fn router_async_loop() {
         _ => panic!("Unknown protocol"),
     };
 
-    // rib_rx <GDPPacket = [u8]>: forward gdppacket to rib
-    let (rib_tx, rib_rx) = mpsc::unbounded_channel();
-    // channel_tx <GDPChannel = <gdp_name, sender>>: forward channel maping to rib
+    // fib_rx <GDPPacket = [u8]>: forward gdppacket to fib
+    let (fib_tx, fib_rx) = mpsc::unbounded_channel();
+    // rib_rx <GDPNameRecord>: rib queries
+    let (rib_query_tx, rib_query_rx) = mpsc::unbounded_channel();
+    // rib_rx <GDPNameRecord>: rib queries
+    let (rib_response_tx, rib_response_rx) = mpsc::unbounded_channel();
+    // channel_tx <GDPChannel = <gdp_name, sender>>: forward channel maping to fib
     let (channel_tx, channel_rx) = mpsc::unbounded_channel();
     // stat_tx <GdpUpdate proto>: any status update from other routers
     let (stat_tx, stat_rx) = mpsc::unbounded_channel();
 
+    // ros_manager <GDPNameRecord>: to and from ros manager
+    let (_ros_manager_tx, ros_manager_rx) = mpsc::unbounded_channel();
+
+
+    let rib_handle = tokio::spawn(local_rib_handler(
+        rib_query_rx,    // get routing queries/updates to rib
+        rib_response_tx, // send routing queries/updates from rib
+        stat_tx.clone(), // send status updates to fib
+    ));
+    future_handles.push(rib_handle);
+
+    let fib_handle = tokio::spawn(connection_fib(
+        fib_rx,               // receive packets to forward
+        rib_query_tx.clone(), // send routing queries to rib
+        rib_response_rx,      // get routing queries from rib
+        stat_rx,              // recevie control place info, e.g. routing
+        channel_rx,           // receive channel information for connection fib
+    ));
+    future_handles.push(fib_handle);
+
+    sleep(Duration::from_millis(500)).await;
+    
     let tcp_sender_handle = tokio::spawn(tcp_listener(
         tcp_bind_addr,
-        rib_tx.clone(),
+        fib_tx.clone(),
         channel_tx.clone(),
+        rib_query_tx.clone(),
     ));
     future_handles.push(tcp_sender_handle);
 
     let dtls_sender_handle = tokio::spawn(dtls_listener(
         dtls_bind_addr,
-        rib_tx.clone(),
+        fib_tx.clone(),
         channel_tx.clone(),
+        rib_query_tx.clone(),
     ));
     future_handles.push(dtls_sender_handle);
+
+    // let webrtc_sender_handle = tokio::spawn(webrtc_main(
+    //     "other_id".to_string(),
+    //     None,
+    //     fib_tx.clone(),
+    //     channel_tx.clone(),
+    //     rib_query_tx.clone(),
+    // ));
+    // future_handles.push(webrtc_sender_handle);
+
+    // let webrtc_sender_handle2 = tokio::spawn(webrtc_main(
+    //     "other_id2".to_string(),
+    //     Some("other_id".to_string()),
+    //     fib_tx.clone(),
+    //     channel_tx.clone(),
+    //     rib_query_tx.clone(),
+    // ));
+    // future_handles.push(webrtc_sender_handle2);
 
     // grpc
     // TODO: uncomment for grpc
     // let psl_service = GDPService {
-    //     rib_tx: rib_tx.clone(),
+    //     fib_tx: fib_tx.clone(),
     //     status_tx: stat_tx,
     // };
 
@@ -87,18 +135,14 @@ async fn router_async_loop() {
     // let grpc_server_handle = manager_handle;
     // future_handles.push(grpc_server_handle);
 
-    let rib_handle = tokio::spawn(connection_router(
-        rib_rx,     // receive packets to forward
-        stat_rx,    // recevie control place info, e.g. routing
-        channel_rx, // receive channel information for connection rib
-    ));
-    future_handles.push(rib_handle);
 
     let ros_topic_manager_handle = tokio::spawn(ros_topic_manager(
         peer_with_gateway,
         default_gateway_addr.clone(),
-        rib_tx.clone(),
+        fib_tx.clone(),
+        ros_manager_rx,
         channel_tx.clone(),
+        rib_query_tx.clone(),
     ));
     future_handles.push(ros_topic_manager_handle);
 
@@ -110,32 +154,42 @@ async fn router_async_loop() {
         if config.ros_protocol == "dtls" {
             let peer_advertisement = tokio::spawn(dtls_to_peer(
                 default_gateway_addr.clone().into(),
-                rib_tx.clone(),
+                fib_tx.clone(),
                 channel_tx.clone(),
                 m_tx.clone(),
                 m_rx,
+                rib_query_tx.clone(),
             ));
             future_handles.push(peer_advertisement);
         } else if config.ros_protocol == "tcp" {
             let peer_advertisement = tokio::spawn(tcp_to_peer(
                 default_gateway_addr.clone().into(),
-                rib_tx.clone(),
+                fib_tx.clone(),
                 channel_tx.clone(),
                 m_tx.clone(),
                 m_rx,
+                rib_query_tx.clone(),
             ));
             future_handles.push(peer_advertisement);
         }
 
         // only non-gateway proxy needs to advertise themselves
         // it needs the connection to be settled first, otherwise the advertisement is lost
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_millis(1500)).await;
         info!("Flushing the RIB....");
         stat_tx
             .send(GDPStatus { sink: m_tx })
             .expect("Flush the RIB Failure");
     }
 
+    // let join_handles = future::join_all(future_handles);
+    // let futures: FuturesUnordered<_> = future_handles
+    // .into_iter()
+    // .collect();
+    // futures.push(join_handles);
+    // futures.push(webrtc_listener_handle);
+    // futures.collect().await;
+    // webrtc_listener_handle.await;
     future::join_all(future_handles).await;
 }
 
@@ -157,9 +211,9 @@ pub fn config() -> Result<()> {
 
     Ok(())
 }
-
+#[tokio::main]
 /// Simulate an error
-pub fn simulate_error() -> Result<()> {
+pub async fn simulate_error() -> Result<()> {
     let config = AppConfig::fetch().expect("App config unable to load");
     info!("{:#?}", config);
     // test_cert();
@@ -167,8 +221,6 @@ pub fn simulate_error() -> Result<()> {
 
     // ros_sample();
     // TODO: uncomment them
-    let test_router_addr = format!("{}:{}", config.default_gateway, config.dtls_port);
-    println!("{}", test_router_addr);
-    dtls_test_client("128.32.37.48:9232".into()).expect("DLTS Client error");
+    // webrtc_main("my_id".to_string(), Some("other_id".to_string())).await;
     Ok(())
 }
